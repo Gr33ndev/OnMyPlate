@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/Gr33ndev/OnMyPlate/security/advisories/new
+    about: Please report security problems privately, not in a public issue (see SECURITY.md).
+  - name: Try the live demo
+    url: https://gr33ndev.github.io/OnMyPlate/demo/
+    about: See how On My Plate works before opening an issue.

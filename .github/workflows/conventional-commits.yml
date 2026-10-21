@@ -1,0 +1,44 @@
+name: Conventional Commits
+
+# Pull request titles become the commit message when squash merging, so both are checked.
+# Direct pushes to main are checked too. The rule itself is tools/hooks/commit-msg, the
+# same script that runs locally as a git hook.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Check pull request title and commit subjects
+        env:
+          EVENT: ${{ github.event_name }}
+          TITLE: ${{ github.event.pull_request.title }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.event.after }}
+        run: |
+          check() { printf '%s\n' "$1" > "$RUNNER_TEMP/msg"; sh tools/hooks/commit-msg "$RUNNER_TEMP/msg"; }
+          failed=0
+          if [ "$EVENT" = pull_request ]; then
+            check "$TITLE" || { echo "::error::Pull request title: $TITLE"; failed=1; }
+            range="$PR_BASE..$PR_HEAD"
+          elif [ "$PUSH_BEFORE" = 0000000000000000000000000000000000000000 ]; then
+            range="$PUSH_AFTER"          # first push of the branch: every commit
+          else
+            range="$PUSH_BEFORE..$PUSH_AFTER"
+          fi
+          while IFS= read -r subject; do
+            check "$subject" || { echo "::error::Commit: $subject"; failed=1; }
+          done < <(git log --format=%s "$range")
+          exit "$failed"

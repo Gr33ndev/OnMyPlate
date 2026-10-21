@@ -1,0 +1,18 @@
+# Only development tooling has dependencies: the GitHub Actions in the workflows and
+# ESLint for the embedded UI. onmyplate.py itself uses the standard library only.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      eslint:
+        patterns: ["*"]

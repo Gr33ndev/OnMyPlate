@@ -1,0 +1,23 @@
+#!/bin/sh
+# Fast checks before every commit (git config core.hooksPath tools/hooks).
+# Uses ruff from PATH, otherwise through uvx; skip once with: git commit --no-verify
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+
+if command -v ruff >/dev/null 2>&1; then
+  ruff="ruff"
+elif command -v uvx >/dev/null 2>&1; then
+  ruff="uvx ruff"
+else
+  echo "pre-commit: ruff not found (pip install ruff, or install uv); skipping lint" >&2
+  ruff=""
+fi
+if [ -n "$ruff" ]; then
+  $ruff check --quiet .
+  $ruff format --check --quiet .
+fi
+
+# An extracted UI that was edited but not embedded would be lost on the next extract.
+if [ -f build/ui.html ]; then
+  python3 tools/ui.py check
+fi

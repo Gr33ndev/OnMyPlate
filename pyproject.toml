@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "onmyplate"
+version = "0.1.0"
+description = "A local, read-only dashboard for your Jira, GitLab and Bitbucket issues and pull requests"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.11"
+authors = [{ name = "Gilian Rehm" }]
+keywords = ["jira", "gitlab", "bitbucket", "dashboard", "todo", "self-hosted"]
+classifiers = [
+  "Environment :: Web Environment",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Software Development :: Bug Tracking",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://gr33ndev.github.io/OnMyPlate/"
+Source = "https://github.com/Gr33ndev/OnMyPlate"
+Issues = "https://github.com/Gr33ndev/OnMyPlate/issues"
+
+[project.scripts]
+onmyplate = "onmyplate:main"
+
+[tool.setuptools]
+py-modules = ["onmyplate"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["build"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "B", "UP", "SIM", "N", "S", "BLE", "ANN", "RUF", "PL", "RET", "TRY",
+          "C4", "PIE", "ARG", "DTZ", "I", "A", "PTH", "ERA", "G", "ISC", "PERF", "FURB"]
+ignore = [
+  "E501",     # the embedded UI has long lines; the formatter wraps code
+  "ANN401", "TRY003", "DTZ005", "PTH123", "PERF203", "ISC001",
+  "PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR2004", "PLW0603",
+  "RUF001", "RUF003",  # typographic dashes and arrows in UI text are intended
+]
+
+[tool.ruff.lint.per-file-ignores]
+"onmyplate.py" = ["E402"]  # the Python version check runs before the other imports
+"tests/*" = ["S101", "S105", "S106", "S603", "ANN", "C901", "PLR0911", "PLR0912", "N802", "PLR0904", "C901", "E501", "SLF001", "RUF012", "PLC0415"]
+"tools/*" = ["T201", "S603"]
+
+[tool.bandit]
+# B105: empty "token" defaults and header names are not secrets.
+# B311: random is only used for deterministic demo data.
+# B405: ElementTree is only fed DTD-free text, see parse_atom_feed().
+skips = ["B105", "B311", "B405"]

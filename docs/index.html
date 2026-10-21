@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>On My Plate – Jira, GitLab and Bitbucket in one local dashboard</title>
+<meta name="description" content="A local, read-only dashboard for the Jira, GitLab and Bitbucket issues and pull requests that concern you. One Python file, no dependencies, nothing leaves your machine.">
+<meta property="og:title" content="On My Plate">
+<meta property="og:description" content="What's on your plate across Jira, GitLab and Bitbucket, in one local dashboard.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://gr33ndev.github.io/OnMyPlate/">
+<meta property="og:image" content="https://gr33ndev.github.io/OnMyPlate/dashboard.png">
+<meta property="og:image:width" content="2880">
+<meta property="og:image:height" content="1720">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%232f5bd3'/%3E%3Ccircle cx='16' cy='16' r='8' fill='none' stroke='white' stroke-width='2.5'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#"><span class="logo" aria-hidden="true"></span>On My Plate</a>
+    <nav>
+      <a href="demo/">Live demo</a>
+      <a href="#features" class="hide-xs">Features</a>
+      <a href="#privacy" class="hide-sm">Privacy</a>
+      <a href="#start" class="hide-sm">Get started</a>
+      <a href="https://github.com/Gr33ndev/OnMyPlate">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="hero wrap">
+    <div class="pills">
+      <span class="pill"><b style="background:var(--jira)"></b>Jira</span>
+      <span class="pill"><b style="background:var(--gitlab)"></b>GitLab</span>
+      <span class="pill"><b style="background:var(--bitbucket)"></b>Bitbucket</span>
+    </div>
+    <h1>Everything on your plate, in one local dashboard.</h1>
+    <p class="lead">On My Plate collects the issues and pull requests that concern you across every project and instance, ranks them by what needs your attention, and keeps your own to-dos right next to them. One Python file. No dependencies. Read-only.</p>
+    <div class="cta">
+      <a class="btn primary" href="demo/">Try the live demo</a>
+      <a class="btn" href="#start">Get started</a>
+    </div>
+    <p class="note">The demo runs entirely in your browser with sample data. Nothing is sent anywhere.</p>
+    <a class="shot" href="demo/" title="Open the live demo">
+      <picture>
+        <source srcset="dashboard-dark.png" media="(prefers-color-scheme: dark)">
+        <img src="dashboard.png" width="2880" height="1720" alt="The On My Plate dashboard with the Next up queue, new changes and follow-ups">
+      </picture>
+    </a>
+  </div>
+
+  <section id="features">
+    <div class="wrap">
+      <h2>“What do I need to do next?” — answered.</h2>
+      <p class="sub">If your work is spread over several Jira projects, GitLab groups and Bitbucket repositories, the answer is usually hidden in three tabs and a dozen filters. The dashboard puts it in one ranked queue.</p>
+      <div class="split">
+        <ol class="queue">
+          <li><div>Your focus items<small>Whatever you starred, always at the top</small></div></li>
+          <li><div>Changes requested on your PRs<small>Unblock yourself first</small></div></li>
+          <li><div>Colleagues waiting for your review<small>Longest wait first</small></div></li>
+          <li><div>Due and overdue items<small>From Jira, GitLab and your own tasks</small></div></li>
+          <li><div>Unanswered mentions<small>Until you reply</small></div></li>
+          <li><div>Work assigned to you</div></li>
+        </ol>
+        <div class="grid" style="grid-template-columns:1fr">
+          <div class="card"><h3>Since your last visit</h3><p>Everything new or changed, including status transitions like “Open → In Progress”.</p></div>
+          <div class="card"><h3>Follow up</h3><p>Your issues and PRs that are with someone else, quietest first, so nothing goes stale.</p></div>
+        </div>
+      </div>
+
+      <div class="grid" style="margin-top:40px">
+        <div class="card">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg></div>
+          <h3>Four views</h3><p>Dashboard, an Issues board (to do / waiting / watchlist), Pull Requests (reviews, your PRs, mentions, team repos) and a filterable List.</p>
+        </div>
+        <div class="card">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/></svg></div>
+          <h3>Personal tasks</h3><p>Stored in a plain Markdown checklist compatible with Obsidian Tasks. Turn any ticket into a task, or edit the file by hand.</p>
+        </div>
+        <div class="card">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg></div>
+          <h3>Knows when you're involved</h3><p>Assigned, created, watched, commented, mentioned, review requested — plus all open PRs in your team's repositories if you like.</p>
+        </div>
+        <div class="card">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8"/></svg></div>
+          <h3>Keyboard driven</h3><p>Move, open, star and hide without touching the mouse. Focus list, private notes and “hide until something changes” stay on your machine.</p>
+        </div>
+      </div>
+      <div class="kbd">
+        <span><kbd>J</kbd> <kbd>K</kbd> move</span>
+        <span><kbd>O</kbd> open in Jira / GitLab / Bitbucket</span>
+        <span><kbd>S</kbd> star</span>
+        <span><kbd>X</kbd> hide</span>
+        <span><kbd>?</kbd> all shortcuts</span>
+      </div>
+
+      <div class="shot">
+        <img src="pull-requests.png" width="2880" height="1720" loading="lazy" alt="Pull request view with your reviews, your PRs, mentions and team repos">
+      </div>
+    </div>
+  </section>
+
+  <section id="privacy">
+    <div class="wrap split">
+      <div>
+        <h2>Built for places where data protection matters.</h2>
+        <p class="sub">On My Plate runs on your laptop and only ever reads from your servers. There is no cloud service, no account and no telemetry.</p>
+        <ul class="checks">
+          <li>Nothing is sent anywhere except read-only API calls to <em>your</em> instances.</li>
+          <li>The HTTP client refuses anything but reads, requires HTTPS and blocks redirects to other hosts, so tokens never leave.</li>
+          <li>Tokens need read scopes only. Ticket data is held in memory and never written to disk.</li>
+          <li>The local server binds to 127.0.0.1, checks Host, Origin and Sec-Fetch-Site, and uses one-time sign-in links.</li>
+          <li>A strict, hash-based Content Security Policy. No third-party scripts, fonts or images.</li>
+          <li>Files are written atomically with mode 0600.</li>
+        </ul>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Source</th><th>Token scope</th></tr></thead>
+          <tbody>
+            <tr><td>Jira Data Center / Server 8.14+</td><td>Personal access token</td></tr>
+            <tr><td>Jira Cloud</td><td><code>read:jira-work</code>, <code>read:jira-user</code></td></tr>
+            <tr><td>GitLab (self-managed or .com)</td><td><code>read_api</code></td></tr>
+            <tr><td>Bitbucket Data Center</td><td>Project read, Repository read</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="start">
+    <div class="wrap">
+      <h2>Get started in a minute</h2>
+      <p class="sub">You need Python 3.11 or newer. Nothing else. Want to look around first? <a href="demo/">Open the live demo</a> in your browser, or run <code>--demo</code> locally — both use sample data and make no network requests.</p>
+      <div class="split" style="align-items:start">
+        <pre><code><span class="c"># download the single file</span>
+curl -O https://raw.githubusercontent.com/Gr33ndev/OnMyPlate/main/onmyplate.py
+
+<span class="c"># look around with sample data</span>
+python3 onmyplate.py --demo
+
+<span class="c"># first real run writes onmyplate.config.json</span>
+python3 onmyplate.py</code></pre>
+        <div>
+          <p style="margin-top:0">Fill in the URLs and tokens in <code>onmyplate.config.json</code> and start it again. Your browser opens and signs in automatically. Every source is optional.</p>
+          <p>Prefer a command on your <code>PATH</code>?</p>
+          <pre><code>pipx install git+https://github.com/Gr33ndev/OnMyPlate
+onmyplate --demo</code></pre>
+          <p>Moving to a new laptop? <code>--export</code> and <code>--import</code> take your tasks and settings along — tokens only if you ask for them.</p>
+        </div>
+      </div>
+      <p style="margin-top:32px"><a class="btn primary" href="https://github.com/Gr33ndev/OnMyPlate#readme">Read the full documentation</a></p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>On My Plate · MIT licensed · no cookies, no tracking</span>
+    <span class="links">
+      <a href="impressum.html">Impressum &amp; privacy</a><a href="https://github.com/Gr33ndev/OnMyPlate">Source code</a><a href="https://github.com/Gr33ndev/OnMyPlate/blob/main/CHANGELOG.md">Changelog</a><a href="https://github.com/Gr33ndev/OnMyPlate/blob/main/SECURITY.md">Security</a><a href="https://github.com/Gr33ndev/OnMyPlate/blob/main/THIRD_PARTY_LICENSES.md">Licenses</a>
+    </span>
+  </div>
+</footer>
+
+</body>
+</html>

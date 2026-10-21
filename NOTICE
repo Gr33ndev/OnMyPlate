@@ -1,0 +1,20 @@
+On My Plate
+
+On My Plate uses only the Python standard library and contains no third-party code, fonts or
+images. Python itself is not part of On My Plate; it is installed separately and licensed under the
+PSF License Agreement (https://docs.python.org/3/license.html).
+
+Jira and Bitbucket are trademarks of Atlassian, GitLab is a trademark of GitLab Inc. On My Plate
+talks only to their documented REST APIs. It is an unofficial, independent community project and
+not affiliated with or endorsed by Atlassian or GitLab Inc. All product names, company names and
+trademarks mentioned in this project belong to their respective owners and are used only to
+describe compatibility.
+
+The task file follows the format of the Obsidian Tasks plugin
+(https://github.com/obsidian-tasks-group/obsidian-tasks, MIT License) so both tools can read it.
+On My Plate has its own implementation and contains no code of that plugin.
+
+Licenses of all bundled third-party components: see THIRD_PARTY_LICENSES.md
+(also shown in the app under ? > About & licenses, and by `python3 onmyplate.py --licenses`).
+
+Project: https://github.com/Gr33ndev/OnMyPlate

@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "description": "Development tooling for the UI embedded in onmyplate.py",
+  "scripts": {
+    "lint": "python3 tools/ui.py extract && eslint build/app.js"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "eslint": "9.39.5",
+    "globals": "17.13.0"
+  }
+}

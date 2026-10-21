@@ -1,0 +1,45 @@
+{
+  "port": 8765,
+  "refresh_minutes": 10,
+  "verify_ssl": true,
+  "ca_bundle": null,
+  "timeout_seconds": 30,
+  "jira": {
+    "enabled": true,
+    "url": "https://jira.your-company.example",
+    "type": "auto",
+    "email": "first.last@your-company.example",
+    "token": "",
+    "scoped_token": true,
+    "cloud_id": null,
+    "include_done": false,
+    "comment_lookback_days": 90,
+    "participation_jql": null,
+    "scope_jql": "",
+    "max_issues_per_query": 500
+  },
+  "gitlab": {
+    "enabled": true,
+    "url": "https://gitlab.your-company.example",
+    "token": "",
+    "include_closed": false,
+    "include_merge_requests": true,
+    "comment_lookback_days": 90,
+    "max_items_per_query": 500,
+    "max_comment_lookups": 150,
+    "watch_projects": [],
+    "mention_lookback_days": 30
+  },
+  "bitbucket": {
+    "enabled": true,
+    "url": "https://bitbucket.your-company.example",
+    "token": "",
+    "auth": "bearer",
+    "username": "",
+    "include_closed": false,
+    "max_items_per_query": 500,
+    "watch_repos": [],
+    "mention_lookback_days": 30,
+    "max_mention_scans": 200
+  }
+}
