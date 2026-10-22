@@ -4,6 +4,8 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.1.2] – 2026-10-22
+
 ### Added
 - `--update` installs the latest release from GitHub after checking every file against its `SHA256SUMS`: it replaces the script (keeping the old one as a backup) or reinstalls the package with pipx or pip. It runs only when you ask for it.
 
@@ -56,6 +58,7 @@ First public release.
   - Server fields checked and cleaned before they reach the UI.
   - A config that another user could change is refused, so nobody can redirect tokens.
 
-[Unreleased]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Gr33ndev/OnMyPlate/releases/tag/v0.1.0
