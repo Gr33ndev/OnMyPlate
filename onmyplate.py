@@ -2901,7 +2901,7 @@ def run_update(script: Path | None = None) -> None:
     latest, name, data, page = update
     print(f"Updating On My Plate {VERSION} → {latest} …")
     if packaged:
-        _install_wheel(name, data)
+        _install_wheel(name, data, latest)
     else:
         _replace_script(script or Path(__file__).resolve(), data, latest)
     print(f"Done. Restart On My Plate to use {latest}. What is new: {page}")
@@ -2922,7 +2922,14 @@ def _replace_script(target: Path, data: bytes, latest: str) -> None:
     print(f"  {target} replaced; the previous version is kept as {backup.name}.")
 
 
-def _install_wheel(name: str, data: bytes) -> None:
+# Asks a fresh interpreter, isolated from the current folder, what is installed now.
+INSTALLED_VERSION = (
+    "import importlib.metadata, onmyplate; "
+    "print(importlib.metadata.version('onmyplate'), onmyplate.VERSION)"
+)
+
+
+def _install_wheel(name: str, data: bytes, latest: str) -> None:
     with tempfile.TemporaryDirectory() as folder:
         wheel = Path(folder) / name
         wheel.write_bytes(data)
@@ -2931,11 +2938,28 @@ def _install_wheel(name: str, data: bytes) -> None:
         if pipx and "pipx" in Path(sys.prefix).parts:
             command = [pipx, "install", "--force", str(wheel)]
         else:
-            command = [sys.executable, "-m", "pip", "install", "--upgrade", str(wheel)]
+            # --force-reinstall: pip would skip a wheel whose version it believes is installed.
+            command = [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--force-reinstall",
+                "--no-deps",
+                str(wheel),
+            ]
         result = _run(command)
     if result.returncode != 0:
         raise SystemExit(
             f"Update failed: {' '.join(command[:3])} … exited with {result.returncode}.\n{sanitize(result.stderr, 800)}"
+        )
+    check = _run([sys.executable, "-I", "-c", INSTALLED_VERSION])
+    found = check.stdout.split()
+    if check.returncode != 0 or found != [latest, latest]:
+        shown = " / ".join(found) or "nothing"
+        raise SystemExit(
+            f"Update failed: {latest} was installed, but Python still finds {sanitize(shown, 100)}. "
+            f"Install it by hand: {' '.join(command[:3])} …"
         )
 
 

@@ -565,20 +565,37 @@ class UpdateTests(unittest.TestCase):
             wl.run_update(path)
         self.assertEqual(path.read_text(), 'VERSION = "old"\n')
 
-    def test_package_install_reinstalls_the_checked_wheel(self) -> None:
+    def package_update(self, installed_after: str) -> mock.MagicMock:
+        """Run --update as a pip install; the version check then reports ``installed_after``."""
         self.release("99.0.0", b'VERSION = "99.0.0"\n')
         site = Path("/opt/venv/lib/python3.14/site-packages")
-        done = subprocess.CompletedProcess([], 0, "", "")
+        results = [
+            subprocess.CompletedProcess([], 0, "", ""),
+            subprocess.CompletedProcess([], 0, installed_after, ""),
+        ]
         with (
             mock.patch.object(wl, "APP_DIR", site),
             mock.patch.object(wl.shutil, "which", return_value=None),
-            mock.patch.object(wl, "_run", return_value=done) as run,
+            mock.patch.object(wl, "_run", side_effect=results) as run,
             mock.patch("sys.stdout", io.StringIO()),
         ):
             wl.run_update()
-        command = run.call_args.args[0]
-        self.assertEqual(command[1:5], ["-m", "pip", "install", "--upgrade"])
-        self.assertTrue(command[-1].endswith("onmyplate-99.0.0-py3-none-any.whl"))
+        return run
+
+    def test_package_install_reinstalls_the_checked_wheel(self) -> None:
+        run = self.package_update("99.0.0 99.0.0\n")
+        install, check = (call.args[0] for call in run.call_args_list)
+        self.assertEqual(install[1:6], ["-m", "pip", "install", "--force-reinstall", "--no-deps"])
+        self.assertTrue(install[-1].endswith("onmyplate-99.0.0-py3-none-any.whl"))
+        self.assertEqual(check[1:3], ["-I", "-c"])
+
+    def test_package_install_that_did_not_take_effect_is_reported(self) -> None:
+        for after in ("0.1.2 99.0.0\n", "99.0.0 0.1.2\n", ""):
+            with (
+                self.subTest(after=after),
+                self.assertRaisesRegex(SystemExit, "Python still finds"),
+            ):
+                self.package_update(after)
 
     def test_redirects_stay_on_github(self) -> None:
         handler = wl._GitHubRedirectHandler()

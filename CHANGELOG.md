@@ -4,6 +4,9 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+- `--update` for pip installs always reinstalls the checked wheel and then confirms that Python finds the new version; before, it could report success when pip had skipped the install.
+
 ## [0.1.2] – 2026-10-22
 
 ### Added
