@@ -4,6 +4,8 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.1.3] – 2026-10-22
+
 ### Fixed
 - `--update` for pip installs always reinstalls the checked wheel and then confirms that Python finds the new version; before, it could report success when pip had skipped the install.
 
@@ -61,7 +63,8 @@ First public release.
   - Server fields checked and cleaned before they reach the UI.
   - A config that another user could change is refused, so nobody can redirect tokens.
 
-[Unreleased]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Gr33ndev/OnMyPlate/releases/tag/v0.1.0
