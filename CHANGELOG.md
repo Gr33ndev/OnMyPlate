@@ -4,6 +4,8 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.1.1] – 2026-10-22
+
 ### Security
 - **Tokens are no longer stored in plain text.** They live in the system keychain (macOS Keychain, the Secret Service on Linux, Windows Credential Manager), bound to the host of the configured URL. `--set-token` and `--delete-token` manage them; `"token_command"` can fetch them from a password manager instead.
 - Configs that still contain a `"token"` are cleaned up on the next start or refresh: the token moves into the keychain and is removed from the file. Without a keychain, such a config is refused.
@@ -46,5 +48,6 @@ First public release.
   - Server fields checked and cleaned before they reach the UI.
   - A config that another user could change is refused, so nobody can redirect tokens.
 
-[Unreleased]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Gr33ndev/OnMyPlate/releases/tag/v0.1.0
