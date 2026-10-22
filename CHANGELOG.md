@@ -4,9 +4,13 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Added
+- `--update` installs the latest release from GitHub after checking every file against its `SHA256SUMS`: it replaces the script (keeping the old one as a backup) or reinstalls the package with pipx or pip. It runs only when you ask for it.
+
 ### Fixed
 - Opening an item in "Since your last visit" no longer makes it vanish: it stays in place, marked as seen, until the next refresh. The same applies to the "New / changed" groups of the other views.
 - In demo mode a refresh no longer marks every item as changed.
+- The quick start downloads the latest release instead of the unreleased `main` branch.
 
 ## [0.1.1] – 2026-10-22
 

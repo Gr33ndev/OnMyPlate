@@ -8,7 +8,7 @@ These keep On My Plate what it is:
 
 - **One file, standard library only.** `onmyplate.py` must keep running with nothing but Python 3.11+. Development tools (ruff, ESLint) are fine; runtime dependencies are not.
 - **Read-only.** On My Plate never changes anything on the servers it talks to. Features that need write access are out of scope.
-- **Local and private.** No telemetry, no external requests besides the configured instances, no third-party scripts or fonts in the UI.
+- **Local and private.** No telemetry, no external requests besides the configured instances (and GitHub, only when the user runs `--update`), no third-party scripts or fonts in the UI.
 - **License notices.** If a dependency is ever added to what ships (the `dependencies` in `pyproject.toml` or in `package.json`), run `python3 tools/third_party_licenses.py`. It updates `THIRD_PARTY_LICENSES.md` and the notices shown in the app; CI fails until you do.
 - **Security first.** New API endpoints, server fields that reach the UI, or changes to authentication need tests. See `tests/test_onmyplate.py`.
 

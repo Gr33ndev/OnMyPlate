@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -487,6 +488,107 @@ class SystemKeychainTests(unittest.TestCase):
         keychain = self.detected()
         self.assertIsInstance(keychain, wl.WindowsKeychain)
         self.roundtrip(keychain)
+
+
+class UpdateTests(unittest.TestCase):
+    """--update installs the latest release only after checking it against SHA256SUMS."""
+
+    def release(self, version: str, script: bytes, sums: str | None = None) -> dict[str, bytes]:
+        digest = hashlib.sha256(script).hexdigest()
+        base = f"https://github.com/Gr33ndev/OnMyPlate/releases/download/v{version}/"
+        api = {
+            "tag_name": f"v{version}",
+            "html_url": f"https://github.com/Gr33ndev/OnMyPlate/releases/tag/v{version}",
+            "assets": [
+                {"name": n, "browser_download_url": base + n}
+                for n in ("onmyplate.py", f"onmyplate-{version}-py3-none-any.whl", "SHA256SUMS")
+            ],
+        }
+        files = {
+            wl.RELEASES_API: json.dumps(api).encode(),
+            base + "onmyplate.py": script,
+            base + f"onmyplate-{version}-py3-none-any.whl": b"wheel-bytes",
+            base + "SHA256SUMS": (
+                sums
+                or f"{digest}  onmyplate.py\n{hashlib.sha256(b'wheel-bytes').hexdigest()}  onmyplate-{version}-py3-none-any.whl\n"
+            ).encode(),
+        }
+        patcher = mock.patch.object(wl, "github_download", side_effect=lambda url, *_: files[url])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return files
+
+    def script(self) -> Path:
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        path = Path(folder) / "onmyplate.py"
+        path.write_text('VERSION = "old"\n')
+        path.chmod(0o750)
+        return path
+
+    def test_up_to_date(self) -> None:
+        self.release(wl.VERSION, b"same")
+        path = self.script()
+        with mock.patch("sys.stdout", io.StringIO()) as out:
+            wl.run_update(path)
+        self.assertIn("is up to date", out.getvalue())
+        self.assertEqual(path.read_text(), 'VERSION = "old"\n')
+
+    def test_script_is_replaced_and_the_old_one_kept(self) -> None:
+        new = b'VERSION = "99.0.0"\nprint("new")\n'
+        self.release("99.0.0", new)
+        path = self.script()
+        with mock.patch("sys.stdout", io.StringIO()) as out:
+            wl.run_update(path)
+        self.assertEqual(path.read_bytes(), new)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o750)
+        self.assertEqual(
+            (path.parent / f"onmyplate-{wl.VERSION}.py.bak").read_text(), 'VERSION = "old"\n'
+        )
+        self.assertIn("Restart On My Plate to use 99.0.0", out.getvalue())
+
+    def test_checksum_mismatch_changes_nothing(self) -> None:
+        self.release("99.0.0", b'VERSION = "99.0.0"\n', sums="0" * 64 + "  onmyplate.py\n")
+        path = self.script()
+        with self.assertRaisesRegex(SystemExit, "does not match SHA256SUMS"):
+            wl.run_update(path)
+        self.assertEqual(path.read_text(), 'VERSION = "old"\n')
+        self.assertEqual(sorted(p.name for p in path.parent.iterdir()), ["onmyplate.py"])
+
+    def test_wrong_version_inside_the_file_is_refused(self) -> None:
+        self.release("99.0.0", b'VERSION = "1.0.0"\n')
+        path = self.script()
+        with (
+            mock.patch("sys.stdout", io.StringIO()),
+            self.assertRaisesRegex(SystemExit, "not version 99.0.0"),
+        ):
+            wl.run_update(path)
+        self.assertEqual(path.read_text(), 'VERSION = "old"\n')
+
+    def test_package_install_reinstalls_the_checked_wheel(self) -> None:
+        self.release("99.0.0", b'VERSION = "99.0.0"\n')
+        site = Path("/opt/venv/lib/python3.14/site-packages")
+        done = subprocess.CompletedProcess([], 0, "", "")
+        with (
+            mock.patch.object(wl, "APP_DIR", site),
+            mock.patch.object(wl.shutil, "which", return_value=None),
+            mock.patch.object(wl, "_run", return_value=done) as run,
+            mock.patch("sys.stdout", io.StringIO()),
+        ):
+            wl.run_update()
+        command = run.call_args.args[0]
+        self.assertEqual(command[1:5], ["-m", "pip", "install", "--upgrade"])
+        self.assertTrue(command[-1].endswith("onmyplate-99.0.0-py3-none-any.whl"))
+
+    def test_redirects_stay_on_github(self) -> None:
+        handler = wl._GitHubRedirectHandler()
+        request = urllib.request.Request("https://github.com/x")
+        with self.assertRaisesRegex(wl.SourceError, "redirected to evil.example"):
+            handler.redirect_request(request, None, 302, "", {}, "https://evil.example/file")
+        allowed = handler.redirect_request(
+            request, None, 302, "", {}, "https://release-assets.githubusercontent.com/f"
+        )
+        self.assertEqual(allowed.full_url, "https://release-assets.githubusercontent.com/f")
 
 
 class FileTests(DataDirCase):

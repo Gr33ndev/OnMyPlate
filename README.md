@@ -59,7 +59,7 @@ It is built for environments where data protection matters:
 You need Python 3.11 or newer. Nothing else.
 
 ```sh
-curl -O https://raw.githubusercontent.com/Gr33ndev/OnMyPlate/main/onmyplate.py
+curl -LO https://github.com/Gr33ndev/OnMyPlate/releases/latest/download/onmyplate.py
 python3 onmyplate.py --demo      # look around with sample data, no network access
 python3 onmyplate.py             # first run writes onmyplate.config.json and explains it
 ```
@@ -75,6 +75,16 @@ onmyplate --demo
 
 When installed this way, data lives in `~/.onmyplate` instead of next to the script.
 
+### Updating
+
+```sh
+python3 onmyplate.py --update    # or: onmyplate --update
+```
+
+`--update` fetches the latest release from GitHub, checks every file against the release's `SHA256SUMS` and then replaces the script (the old one is kept as `onmyplate-<version>.py.bak`) or reinstalls the package with pipx or pip. It only runs when you ask for it: On My Plate never contacts GitHub on its own. Your data, settings and tokens stay where they are.
+
+Versions 0.1.0 and 0.1.1 do not have `--update` yet: download the script once more with the `curl` line above, or run `pipx install --force git+https://github.com/Gr33ndev/OnMyPlate`.
+
 ## Command line
 
 | Option | Effect |
@@ -89,6 +99,7 @@ When installed this way, data lives in `~/.onmyplate` instead of next to the scr
 | `--export ZIP` / `--with-config` | Write a backup (tasks and settings; with `--with-config` also the config, never tokens) and exit. |
 | `--import ZIP` | Restore a backup and exit. Existing files are kept as `*.bak-<timestamp>`. |
 | `--rotate-key` | New access secret: every browser has to sign in again. |
+| `--update` | Install the latest release from GitHub, checked against its `SHA256SUMS`. |
 | `--licenses` | Show the license of On My Plate and of the third-party software it ships. |
 
 ## Tokens

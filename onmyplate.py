@@ -2814,6 +2814,132 @@ class RequestHandler(BaseHTTPRequestHandler):
 
 
 # --------------------------------------------------------------------------- #
+# Updates: only when the user runs --update
+# --------------------------------------------------------------------------- #
+
+RELEASES_API = "https://api.github.com/repos/Gr33ndev/OnMyPlate/releases/latest"
+RE_VERSION = re.compile(r"\d+\.\d+\.\d+")
+RE_SHA256_LINE = re.compile(r"([0-9a-f]{64})\s+\*?(\S+)")
+
+
+class _GitHubRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Release downloads redirect to GitHub's storage; nothing else is followed."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN202, PLR0917 - stdlib signature
+        target = urllib.parse.urlsplit(urllib.parse.urljoin(req.full_url, newurl))
+        host = (target.hostname or "").lower()
+        if target.scheme != "https" or not (
+            host in ("github.com", "api.github.com") or host.endswith(".githubusercontent.com")
+        ):
+            raise SourceError(f"Update stopped: GitHub redirected to {sanitize(host, 100)}.")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def github_download(url: str, accept: str = "application/octet-stream") -> bytes:
+    """Fetch a release file from GitHub over HTTPS with certificate checks, size-bounded."""
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=ssl.create_default_context()), _GitHubRedirectHandler()
+    )
+    request = urllib.request.Request(  # noqa: S310 - fixed https URLs from the GitHub API
+        url, headers={"Accept": accept, "User-Agent": f"onmyplate/{VERSION}"}
+    )
+    try:
+        with opener.open(request, timeout=60) as response:
+            data = response.read(MAX_RESPONSE_BYTES + 1)
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise SourceError(
+            f"Cannot reach GitHub ({sanitize(getattr(exc, 'reason', exc), 200)})."
+        ) from None
+    if len(data) > MAX_RESPONSE_BYTES:
+        raise SourceError("Update stopped: the download is implausibly large.")
+    return data
+
+
+def version_key(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
+def _fetch_update(packaged: bool) -> tuple[str, str, bytes, str] | None:
+    """Return ``(version, file name, checked file, release page)``, or None if up to date."""
+    release = json.loads(github_download(RELEASES_API, "application/vnd.github+json"))
+    latest = str(release.get("tag_name") or "").removeprefix("v")
+    if not RE_VERSION.fullmatch(latest):
+        raise SourceError("the latest release has no version number")
+    if version_key(latest) <= version_key(VERSION):
+        return None
+    assets = {
+        a.get("name"): a.get("browser_download_url")
+        for a in release.get("assets") or []
+        if isinstance(a, dict) and str(a.get("browser_download_url", "")).startswith("https://")
+    }
+    name = f"onmyplate-{latest}-py3-none-any.whl" if packaged else "onmyplate.py"
+    if name not in assets or "SHA256SUMS" not in assets:
+        raise SourceError(f"release {latest} has no {name} or SHA256SUMS")
+    lines = github_download(assets["SHA256SUMS"]).decode().splitlines()
+    sums = {m.group(2): m.group(1) for m in map(RE_SHA256_LINE.fullmatch, lines) if m}
+    data = github_download(assets[name])
+    if hashlib.sha256(data).hexdigest() != sums.get(name):
+        raise SourceError(f"{name} does not match SHA256SUMS, nothing was changed")
+    return latest, name, data, str(release.get("html_url") or "")
+
+
+def run_update(script: Path | None = None) -> None:
+    """Install the latest release: replace the script, or reinstall the package with pipx/pip.
+
+    Every file is checked against the SHA256SUMS of the same release before it is used.
+    """
+    packaged = script is None and any(
+        part in ("site-packages", "dist-packages") for part in APP_DIR.parts
+    )
+    try:
+        update = _fetch_update(packaged)
+    except (SourceError, ValueError) as exc:
+        raise SystemExit(f"Update failed: {exc}") from None
+    if update is None:
+        print(f"On My Plate {VERSION} is up to date.")
+        return
+    latest, name, data, page = update
+    print(f"Updating On My Plate {VERSION} → {latest} …")
+    if packaged:
+        _install_wheel(name, data)
+    else:
+        _replace_script(script or Path(__file__).resolve(), data, latest)
+    print(f"Done. Restart On My Plate to use {latest}. What is new: {page}")
+
+
+def _replace_script(target: Path, data: bytes, latest: str) -> None:
+    if f'VERSION = "{latest}"'.encode() not in data:
+        raise SystemExit(f"Update failed: the downloaded file is not version {latest}.")
+    backup = target.with_name(f"{target.stem}-{VERSION}.py.bak")
+    try:
+        shutil.copy2(target, backup)
+        tmp = target.with_name(f".{target.name}.{secrets.token_hex(6)}.tmp")
+        tmp.write_bytes(data)
+        tmp.chmod(target.stat().st_mode & 0o777)
+        tmp.replace(target)
+    except OSError as exc:
+        raise SystemExit(f"Update failed: cannot write {target} ({exc.strerror}).") from None
+    print(f"  {target} replaced; the previous version is kept as {backup.name}.")
+
+
+def _install_wheel(name: str, data: bytes) -> None:
+    with tempfile.TemporaryDirectory() as folder:
+        wheel = Path(folder) / name
+        wheel.write_bytes(data)
+        # A pipx install lives in .../pipx/venvs/onmyplate; pipx must reinstall it from outside.
+        pipx = shutil.which("pipx")
+        if pipx and "pipx" in Path(sys.prefix).parts:
+            command = [pipx, "install", "--force", str(wheel)]
+        else:
+            command = [sys.executable, "-m", "pip", "install", "--upgrade", str(wheel)]
+        result = _run(command)
+    if result.returncode != 0:
+        raise SystemExit(
+            f"Update failed: {' '.join(command[:3])} … exited with {result.returncode}.\n{sanitize(result.stderr, 800)}"
+        )
+
+
+# --------------------------------------------------------------------------- #
 # Command line
 # --------------------------------------------------------------------------- #
 
@@ -2866,6 +2992,12 @@ def parse_args() -> argparse.Namespace:
         choices=SOURCE_NAMES,
         metavar="SOURCE",
         help="remove the stored token for jira, gitlab or bitbucket from the system keychain and exit",
+    )
+    parser.add_argument(
+        "--update",
+        action="store_true",
+        help="download and install the latest release from GitHub (checked against its "
+        "SHA256SUMS) and exit; On My Plate never contacts GitHub otherwise",
     )
     parser.add_argument(
         "--licenses",
@@ -3020,6 +3152,9 @@ def main() -> None:
     args = parse_args()
     if args.licenses:
         print(licenses_text(), end="")
+        return
+    if args.update:
+        run_update()
         return
     if args.demo:
         set_data_dir(tempfile.mkdtemp(prefix="onmyplate-demo-"))
@@ -3754,6 +3889,12 @@ function markSeen(ids) {
   }
   saveLocal();
 }
+// Opening an item counts as seeing it, but it stays where it was until the next refresh,
+// so it does not vanish from "Since your last visit" or jump to "Unchanged" under the cursor.
+const openedSeen = new Set();
+function openSeen(ids) { ids.forEach(id => openedSeen.add(id)); markSeen(ids); }
+function dismissSeen(ids) { ids.forEach(id => openedSeen.delete(id)); markSeen(ids); }
+const listedAsChanged = (it) => !!change(it) || openedSeen.has(it.id);
 function hideItem(it) {
   const before = { hidden: local.hidden[it.id], seen: local.seen[it.id], seenStatus: local.seenStatus[it.id] };
   local.hidden[it.id] = it.updated || new Date().toISOString(); local.seen[it.id] = local.hidden[it.id]; local.seenStatus[it.id] = it.status || "";
@@ -3889,12 +4030,6 @@ function colSections(id, list) {
     const cut = Date.now() - STALE_DAYS * 86400000;
     return [["Active", byUpd.filter(it => ts(it.updated) >= cut)],
             [`Quiet for ${STALE_DAYS}+ days`, byUpd.filter(it => ts(it.updated) < cut)]].filter(s => s[1].length);
-// Opening an item counts as seeing it, but it stays where it was until the next refresh,
-// so it does not vanish from "Since your last visit" or jump to "Unchanged" under the cursor.
-const openedSeen = new Set();
-function openSeen(ids) { ids.forEach(id => openedSeen.add(id)); markSeen(ids); }
-function dismissSeen(ids) { ids.forEach(id => openedSeen.delete(id)); markSeen(ids); }
-const listedAsChanged = (it) => !!change(it) || openedSeen.has(it.id);
   }
   return [["New / changed", byUpd.filter(listedAsChanged)],
           ["Unchanged", byUpd.filter(it => !listedAsChanged(it))]].filter(s => s[1].length);
@@ -4349,7 +4484,8 @@ function toggleHelp(show, section) {
     helpReturn = document.activeElement;
     $("#aboutVersion").textContent = data.version || "";
     renderSetup();
-    $("#dataInfo").innerHTML = dataDir ? `· Data folder <code>${esc(dataDir)}</code> · <a href="/api/export" data-act="export">Download backup</a> (tasks, notes, settings; no tokens)` : "";
+    $("#dataInfo").innerHTML = (dataDir ? `· Data folder <code>${esc(dataDir)}</code> · <a href="/api/export" data-act="export">Download backup</a> (tasks, notes, settings; no tokens)` : "")
+      + ` · Update with <code>onmyplate --update</code>`;
     (section ? $(section) : null)?.scrollIntoView({ block: "start" });
     $("#help .dialog button").focus();
   } else if (helpReturn?.isConnected) helpReturn.focus();

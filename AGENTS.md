@@ -12,7 +12,7 @@ These are product decisions, not style preferences. Do not break them, even if a
 
 1. **Single file, standard library only.** Never add a runtime import that is not in the Python 3.11 standard library. Never split `onmyplate.py` into a package. Dev tools (ruff, bandit, ESLint) are fine.
 2. **Read-only.** `HttpClient.request` only allows `GET` plus the Jira search `POST` paths in `READ_ONLY_POST_PATHS`. Never widen this; features that need write access are out of scope.
-3. **No outbound traffic** other than the configured instances. No telemetry, CDNs, web fonts or third-party scripts in the UI. `test_ui_has_no_external_resources` in `tests/test_app.py` guards this.
+3. **No outbound traffic** other than the configured instances. No telemetry, CDNs, web fonts or third-party scripts in the UI. The one exception is `--update`, which talks to GitHub only when the user runs it; never add an automatic update check. `test_ui_has_no_external_resources` in `tests/test_app.py` guards this.
 4. **Python 3.11 compatible.** 3.11 is the oldest Python with security support at the first release. Don't use anything newer, such as `type` statements or PEP 695 generics (3.12). Raise the minimum only together with `requires-python` in `pyproject.toml`, the version check at the top of `onmyplate.py`, the CI matrix and the README.
 5. **Security-relevant changes need tests**: new endpoints, new server fields reaching the UI (add them to `coerce_item` / `ITEM_TEXT_LIMITS`), auth, redirects, file handling.
 6. **Tokens never touch the disk in plain text.** They come from the system keychain, `token_command` or the environment (`resolve_token`); `move_tokens_to_keychain` removes any `"token"` from the config file. Never add another place that writes or logs a token.
