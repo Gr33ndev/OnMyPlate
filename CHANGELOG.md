@@ -4,6 +4,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+- Opening an item in "Since your last visit" no longer makes it vanish: it stays in place, marked as seen, until the next refresh. The same applies to the "New / changed" groups of the other views.
+- In demo mode a refresh no longer marks every item as changed.
+
 ## [0.1.1] – 2026-10-22
 
 ### Security

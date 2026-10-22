@@ -692,6 +692,14 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(snapshot["links"]["gitlab"], "https://gl.example")
         self.assertTrue(any("verify_ssl" in w for w in snapshot["warnings"]))
 
+    def test_demo_data_stays_the_same_on_refresh(self) -> None:
+        store = wl.Store(wl.merge_config(wl.DEFAULT_CONFIG, {}), demo=True)
+        store.refresh()
+        first = store.snapshot()["items"]
+        time.sleep(0.01)
+        store.refresh()
+        self.assertEqual(store.snapshot()["items"], first)
+
     def test_demo_items_are_valid(self) -> None:
         for sources in (wl.SOURCE_NAMES, ("gitlab",), ("bitbucket",)):
             items = wl.demo_items(sources)

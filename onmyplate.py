@@ -2373,6 +2373,7 @@ class Store:
         self.by_source: dict[str, dict[str, Any]] = {}
         self.source_errors: dict[str, str] = {}
         self.token_origins: dict[str, str] = {}
+        self.demo_cache: list[Item] | None = None
         self.errors: list[str] = []
         self.warnings: list[str] = []
         self.static_warnings: list[str] = []
@@ -2449,7 +2450,11 @@ class Store:
             config_error = self._reload_config()
             source_errors: dict[str, str] = {}
             if self.demo:
-                results = {"demo": (demo_items(self.demo_sources), [], None)}
+                # The same sample data on every refresh, as a real server would return it;
+                # fresh timestamps would mark everything as changed.
+                if self.demo_cache is None:
+                    self.demo_cache = demo_items(self.demo_sources)
+                results = {"demo": (self.demo_cache, [], None)}
             else:
                 sources, source_errors = self._sources()
                 with ThreadPoolExecutor(3) as pool:
@@ -3805,7 +3810,7 @@ const extLink = (it, act = "seen-link") => openUrl(it) === "#"
   : `<a class="ib ext" href="${esc(openUrl(it))}" target="_blank" rel="noopener noreferrer" data-act="${act}" data-ref="${esc(it.id)}" title="Open in ${SRC[it.source]} (O)" aria-label="Open ${esc(it.key)} in ${SRC[it.source]}">${ICON.ext}</a>`;
 function openIssue(id) {
   const it = data.items.find(i => i.id === id); if (!it || openUrl(it) === "#") return;
-  window.open(openUrl(it), "_blank", "noopener,noreferrer"); markSeen([id]); setTimeout(render, 0);
+  window.open(openUrl(it), "_blank", "noopener,noreferrer"); openSeen([id]); setTimeout(render, 0);
 }
 const keyLink = (it) => safeUrl(it.url) === "#" ? `<span class="key" title="${noLink()}">${esc(it.key)}</span>`
   : `<a class="key" href="${esc(safeUrl(it.url))}" target="_blank" rel="noopener noreferrer" data-act="seen-link">${esc(it.key)}</a>`;
@@ -3884,9 +3889,15 @@ function colSections(id, list) {
     const cut = Date.now() - STALE_DAYS * 86400000;
     return [["Active", byUpd.filter(it => ts(it.updated) >= cut)],
             [`Quiet for ${STALE_DAYS}+ days`, byUpd.filter(it => ts(it.updated) < cut)]].filter(s => s[1].length);
+// Opening an item counts as seeing it, but it stays where it was until the next refresh,
+// so it does not vanish from "Since your last visit" or jump to "Unchanged" under the cursor.
+const openedSeen = new Set();
+function openSeen(ids) { ids.forEach(id => openedSeen.add(id)); markSeen(ids); }
+function dismissSeen(ids) { ids.forEach(id => openedSeen.delete(id)); markSeen(ids); }
+const listedAsChanged = (it) => !!change(it) || openedSeen.has(it.id);
   }
-  return [["New / changed", byUpd.filter(it => change(it))],
-          ["Unchanged", byUpd.filter(it => !change(it))]].filter(s => s[1].length);
+  return [["New / changed", byUpd.filter(listedAsChanged)],
+          ["Unchanged", byUpd.filter(it => !listedAsChanged(it))]].filter(s => s[1].length);
 }
 
 function renderPRs() {
@@ -3910,14 +3921,14 @@ function renderPRs() {
   }
   const byUpd = (l) => sorted(l, "updated");
   const sections = {
-    review: (l) => [["New / changed", byUpd(l.filter(change))], ["Open", byUpd(l.filter(it => !change(it)))]],
+    review: (l) => [["New / changed", byUpd(l.filter(listedAsChanged))], ["Open", byUpd(l.filter(it => !listedAsChanged(it)))]],
     mine: (l) => [["Changes requested", byUpd(l.filter(it => it.relations.includes("changes")))],
                   ["In review", byUpd(l.filter(it => !it.relations.includes("changes") && it.state !== "todo"))],
                   ["Draft", byUpd(l.filter(it => !it.relations.includes("changes") && it.state === "todo"))]],
     involved: (l) => [["Mentioned", byUpd(l.filter(it => it.relations.includes("mentioned")))],
-                      ["New / changed", byUpd(l.filter(it => !it.relations.includes("mentioned") && change(it)))],
-                      ["Unchanged", byUpd(l.filter(it => !it.relations.includes("mentioned") && !change(it)))]],
-    team: (l) => [["New / changed", byUpd(l.filter(change))], ["Unchanged", byUpd(l.filter(it => !change(it)))]],
+                      ["New / changed", byUpd(l.filter(it => !it.relations.includes("mentioned") && listedAsChanged(it)))],
+                      ["Unchanged", byUpd(l.filter(it => !it.relations.includes("mentioned") && !listedAsChanged(it)))]],
+    team: (l) => [["New / changed", byUpd(l.filter(listedAsChanged))], ["Unchanged", byUpd(l.filter(it => !listedAsChanged(it)))]],
   };
   const empty = { review: "No open reviews.", mine: "You have no open PRs.", involved: "Nothing here.",
                   team: (data.enabled || []).length ? "No other PRs. Add team repos in the config under watch_projects / watch_repos." : "Empty." };
@@ -3979,7 +3990,8 @@ function renderOverview() {
   for (const g of ["focus", "changes", "mention", "doing", "assigned"]) groups[g] = sorted(groups[g], "updated");
   const queue = NEXT_GROUPS.flatMap(g => groups[g.id]);
 
-  const changed = sorted(open.filter(it => change(it)), "updated");
+  const changed = sorted(open.filter(listedAsChanged), "updated");
+  const unseen = changed.filter(it => change(it)).length;
   const waiting = open.filter(it => bucketOf(it) === "waiting").sort((a, b) => ts(a.updated) - ts(b.updated));
   const stale = waiting.filter(it => Date.now() - ts(it.updated) > STALE_DAYS * 86400000).length;
   const ownUrgent = todos.filter(t => !t.done && todoDue(t)?.urgent).length;
@@ -3991,7 +4003,7 @@ function renderOverview() {
     kpi(queue.length, "Next up", "var(--c-todo)", groups.doing.length ? `${groups.doing.length} in progress` : "") +
     kpi(blocking, "PRs waiting for you", "var(--c-todo)", groups.changes.length ? `${groups.changes.length} Needs work` : "", groups.changes.length > 0, "prs") +
     kpi(groups.due.length + ownUrgent, "Due / overdue", "var(--danger)", ownUrgent ? `incl. ${ownUrgent} of your tasks` : "", groups.due.length + ownUrgent > 0, "issues") +
-    kpi(changed.length, "New / changed", "var(--c-watch)") +
+    kpi(unseen, "New / changed", "var(--c-watch)") +
     kpi(waiting.length, "With others", "var(--c-wait)", stale ? `${stale} quiet` : "", false, "issues");
 
   if (!data.items.length) {
@@ -4004,7 +4016,7 @@ function renderOverview() {
     groups[g.id].map(it => dRowHtml(it, false, nextReason(it, g.id))).join("")).join("")
     || `<div class="cempty">Nothing is waiting for you. New assignments, reviews and mentions show up here as they arrive.</div>`;
   const changedBody = changed.length
-    ? changed.map(it => dRowHtml(it, false, { change: changeText(it), hide: changeText(it).startsWith("updated") ? ["age"] : [] })).join("")
+    ? changed.map(it => dRowHtml(it, false, change(it) ? { change: changeText(it), hide: changeText(it).startsWith("updated") ? ["age"] : [] } : { reason: "Seen" })).join("")
     : `<div class="cempty">All caught up. Changes to your issues and PRs show up here.</div>`;
   const waitingBody = waiting.length
     ? waiting.map(it => {
@@ -4019,7 +4031,7 @@ function renderOverview() {
     <section class="card col" data-col="next">${head("Next up", queue.length, `Sorted by urgency, start at the top. ${TOUCH ? "Tap ☆" : "Press S"} to pin something to the very top.`)}${nextBody}</section>
     <div class="ostack">
       <section class="card col" data-col="changed">${head("Since your last visit", changed.length, "New and changed items from all sources",
-        changed.length ? `<button class="clear" data-act="seen-all">Mark all ${changed.length} as seen</button>` : "")}${changedBody}</section>
+        unseen ? `<button class="clear" data-act="seen-all">Mark all ${unseen} as seen</button>` : "")}${changedBody}</section>
       <section class="card col" data-col="waiting">${head("Follow up", waiting.length, "Your issues and PRs with others, quietest first")}${waitingBody}</section>
     </div>
   </div>`;
@@ -4291,7 +4303,7 @@ async function load() {
 }
 async function refresh() {
   if (refreshing) return;
-  refreshing = true; renderMeta();
+  refreshing = true; renderMeta(); openedSeen.clear();
   data = await api("/api/refresh", { method: "POST" }, data);
   refreshing = false; baseline(); render();
   announce(data.errors?.length ? `Refreshed with ${data.errors.length} ${data.errors.length === 1 ? "error" : "errors"}` : `Refreshed: ${data.items.length} items`);
@@ -4417,19 +4429,19 @@ document.addEventListener("click", e => {
     case "pin": local.pins = local.pins.includes(id) ? local.pins.filter(x => x !== id) : [...local.pins, id]; saveLocal(); render(); break;
     case "toggle":
       if (e.ctrlKey || e.metaKey || e.shiftKey) { openIssue(id); break; }
-      ui.open = ui.open === id ? null : id; if (ui.open) markSeen([id]); render(); break;
-    case "seen-ext": markSeen([el.dataset.ref]); setTimeout(render, 0); break;
-    case "seen-link": markSeen([id]); setTimeout(render, 0); break;
-    case "seen": markSeen([id]); render(); break;
+      ui.open = ui.open === id ? null : id; if (ui.open) openSeen([id]); render(); break;
+    case "seen-ext": openSeen([el.dataset.ref]); setTimeout(render, 0); break;
+    case "seen-link": openSeen([id]); setTimeout(render, 0); break;
+    case "seen": dismissSeen([id]); render(); break;
     case "seen-col": {
       const col = el.dataset.col;
       const inCol = col.startsWith("pr:") ? (i => isPR(i) && prCol(i) === col.slice(3))
         : (i => boardCol(i) === col && (ui.view !== "issues" || !isPR(i)));
-      markSeen(data.items.filter(i => i.state !== "done" && matches(i) && !isHidden(i) && inCol(i) && change(i)).map(i => i.id));
+      dismissSeen(data.items.filter(i => i.state !== "done" && matches(i) && !isHidden(i) && inCol(i) && listedAsChanged(i)).map(i => i.id));
       render(); break;
     }
     case "hide": hideItem(it); render(); break;
-    case "seen-all": markSeen(data.items.filter(i => i.state !== "done" && matches(i) && !isHidden(i) && change(i)).map(i => i.id)); render(); break;
+    case "seen-all": dismissSeen(data.items.filter(i => i.state !== "done" && matches(i) && !isHidden(i) && listedAsChanged(i)).map(i => i.id)); render(); break;
     case "unhide": delete local.hidden[id]; saveLocal(); render(); break;
     case "toggle-hidden": ui.showHidden[el.dataset.col] = !ui.showHidden[el.dataset.col]; render(); break;
     case "move": if (el.dataset.to) local.bucket[id] = el.dataset.to; else delete local.bucket[id]; saveLocal(); render(); break;
@@ -4498,11 +4510,11 @@ document.addEventListener("keydown", e => {
     "l": () => { ui.view = "list"; saveUi(); render(); }, "i": () => { ui.view = "issues"; saveUi(); render(); },
     "j": () => moveCur(1), "ArrowDown": () => moveCur(1), "k": () => moveCur(-1), "ArrowUp": () => moveCur(-1),
     "ArrowRight": () => moveCol(1), "ArrowLeft": () => moveCol(-1),
-    "Enter": () => { if (it) { ui.open = ui.open === it.id ? null : it.id; if (ui.open) markSeen([it.id]); render(); setCur(it.id); } },
-    " ": () => { if (it && document.activeElement?.dataset.id === it.id) { ui.open = ui.open === it.id ? null : it.id; if (ui.open) markSeen([it.id]); render(); setCur(it.id); } },
+    "Enter": () => { if (it) { ui.open = ui.open === it.id ? null : it.id; if (ui.open) openSeen([it.id]); render(); setCur(it.id); } },
+    " ": () => { if (it && document.activeElement?.dataset.id === it.id) { ui.open = ui.open === it.id ? null : it.id; if (ui.open) openSeen([it.id]); render(); setCur(it.id); } },
     "o": () => { if (it) openIssue(it.id); else if (ui.open) openIssue(ui.open); },
     "s": () => { if (it) { local.pins = local.pins.includes(it.id) ? local.pins.filter(x => x !== it.id) : [...local.pins, it.id]; saveLocal(); render(); } },
-    "m": () => { if (it) { markSeen([it.id]); render(); } },
+    "m": () => { if (it) { dismissSeen([it.id]); render(); } },
     "x": () => { if (!it) return; const rows = rowEls(), i = rows.findIndex(r => r.dataset.id === it.id);
                  const nextId = (rows[i + 1] || rows[i - 1])?.dataset.id;
                  if (isHidden(it)) { delete local.hidden[it.id]; saveLocal(); } else hideItem(it);
