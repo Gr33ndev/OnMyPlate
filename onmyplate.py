@@ -54,6 +54,7 @@ if sys.version_info < (3, 11):  # noqa: UP036 - runs before imports that fail on
 
 import argparse
 import base64
+import getpass
 import hashlib
 import hmac
 import io
@@ -62,9 +63,13 @@ import os
 import random
 import re
 import secrets
+import shlex
+import shutil
 import ssl
 import stat
-import sys
+
+# subprocess runs the keychain tool and the user's own token_command
+import subprocess  # nosec B404
 import tempfile
 import threading
 import time
@@ -86,6 +91,7 @@ VERSION = "0.1.0"
 APP_DIR = Path(__file__).resolve().parent
 SOURCE_NAMES = ("jira", "gitlab", "bitbucket")
 SOURCE_LABELS = {"jira": "Jira", "gitlab": "GitLab", "bitbucket": "Bitbucket"}
+SOURCE_ENV_VARS = {name: f"ONMYPLATE_{name.upper()}_TOKEN" for name in SOURCE_NAMES}
 
 MAX_PAGES = 50
 MAX_RESPONSE_BYTES = 20_000_000
@@ -560,7 +566,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "url": "https://jira.your-company.example",
         "type": "auto",
         "email": "first.last@your-company.example",
-        "token": "",
+        "token_command": None,
         "scoped_token": True,
         "cloud_id": None,
         "include_done": False,
@@ -572,7 +578,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "gitlab": {
         "enabled": True,
         "url": "https://gitlab.your-company.example",
-        "token": "",
+        "token_command": None,
         "include_closed": False,
         "include_merge_requests": True,
         "comment_lookback_days": 90,
@@ -584,7 +590,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "bitbucket": {
         "enabled": True,
         "url": "https://bitbucket.your-company.example",
-        "token": "",
+        "token_command": None,
         "auth": "bearer",
         "username": "",
         "include_closed": False,
@@ -603,15 +609,16 @@ Please fill in:
                  any context path such as https://company.com/jira
                  Cloud: https://company.atlassian.net
   jira.type    – "auto" (default: *.atlassian.net = Cloud, otherwise Data Center), "server", "cloud"
-  jira.token   – Data Center: personal access token (avatar → Profile → Personal Access Tokens,
-                 Jira 8.14+); it has the same permissions as your account and is sent as a
-                 Bearer token. Cloud: "API token with scopes", only read:jira-work +
-                 read:jira-user, plus jira.email
+  jira.email   – Jira Cloud only: the e-mail address of your Atlassian account
   gitlab.url   – base URL of your GitLab instance
-  gitlab.token – personal access token with ONLY the "read_api" scope
-  bitbucket    – Bitbucket Data Center: url (including context path) and a personal HTTP access token
-                 with "Project read" + "Repository read"
-                 (Profile → Manage account → HTTP access tokens)
+  bitbucket    – Bitbucket Data Center: url, including any context path
+
+Tokens never go into this file. Store each one in the system keychain (asked for, not shown):
+  python3 {script} --set-token jira        Data Center: personal access token (Jira 8.14+);
+                                           Cloud: API token with scopes read:jira-work + read:jira-user
+  python3 {script} --set-token gitlab      personal access token with ONLY the "read_api" scope
+  python3 {script} --set-token bitbucket   personal HTTP access token, Project read + Repository read
+Or let a password manager provide it: "token_command": "op read op://Private/GitLab/token"
 
 Team repos (open PRs/MRs, plus mention search on Bitbucket), optional:
   gitlab.watch_projects   – e.g. ["platform/infra-live", "platform"]  (project or group)
@@ -633,6 +640,262 @@ def merge_config(defaults: dict[str, Any], user: dict[str, Any] | None) -> dict[
         else:
             merged[key] = value
     return merged
+
+
+# --------------------------------------------------------------------------- #
+# Token storage: the system keychain, never the config file
+# --------------------------------------------------------------------------- #
+
+KEYCHAIN_SERVICE = "On My Plate"
+# Printable ASCII without spaces, quotes or backslashes: every real API token fits, and the
+# macOS keychain tool can read it from stdin without any quoting problems.
+RE_STORABLE_TOKEN = re.compile(r"[!#-&(-\[\]-~]{1,4096}")
+RE_ACCOUNT = re.compile(r"[a-z]+@[A-Za-z0-9.:\[\]-]+")
+NO_KEYCHAIN = (
+    "On My Plate does not store tokens in plain text, but found no keychain it can use "
+    "(macOS Keychain, the Secret Service via secret-tool on Linux, Windows Credential Manager). "
+    'Remove "token" from the config and use "token_command" or the {env} variable instead.'
+)
+
+
+def token_account(name: str, url: object) -> str:
+    """Keychain account of a source's token: it belongs to one host and never moves to another."""
+    host = (urllib.parse.urlsplit(str(url or "")).netloc or "").lower()
+    account = f"{name}@{host}"
+    if not RE_ACCOUNT.fullmatch(account):
+        raise SourceError(f"{SOURCE_LABELS[name]}: the URL {sanitize(url, 200)} has no valid host")
+    return account
+
+
+def _run(command: list[str], stdin: str = "") -> subprocess.CompletedProcess[str]:
+    # Fixed keychain tools with checked arguments, or the token_command from the private config.
+    return subprocess.run(  # noqa: S603  # nosec B603
+        command, input=stdin, capture_output=True, text=True, timeout=30, check=False
+    )
+
+
+class Keychain:
+    """Where tokens are kept, keyed by ``token_account``."""
+
+    label = ""
+
+    def get(self, account: str) -> str | None:
+        raise NotImplementedError
+
+    def set(self, account: str, token: str) -> None:
+        raise NotImplementedError
+
+    def delete(self, account: str) -> bool:
+        raise NotImplementedError
+
+    def _verify(self, account: str, token: str, detail: str) -> None:
+        if self.get(account) != token:
+            raise SourceError(f"Could not store the token in {self.label}: {sanitize(detail, 200)}")
+
+
+class MacKeychain(Keychain):
+    label = "the macOS Keychain"
+
+    def __init__(self, keychain: str | None = None) -> None:
+        self.tool = "/usr/bin/security"
+        self.keychain = [keychain] if keychain else []
+
+    def get(self, account: str) -> str | None:
+        args = ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", account, "-w"]
+        result = _run([self.tool, *args, *self.keychain])
+        return result.stdout.rstrip("\n") or None if result.returncode == 0 else None
+
+    def set(self, account: str, token: str) -> None:
+        # The token travels through stdin: command lines are visible to other local users.
+        target = f' "{self.keychain[0]}"' if self.keychain else ""
+        line = (
+            f'add-generic-password -U -s "{KEYCHAIN_SERVICE}" -a "{account}" -w "{token}"{target}\n'
+        )
+        result = _run([self.tool, "-i"], line)
+        self._verify(account, token, result.stderr)
+
+    def delete(self, account: str) -> bool:
+        args = ["delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", account]
+        return _run([self.tool, *args, *self.keychain]).returncode == 0
+
+
+class SecretServiceKeychain(Keychain):
+    label = "the Secret Service keyring"
+
+    def __init__(self, tool: str) -> None:
+        self.tool = tool
+
+    def _attributes(self, account: str) -> list[str]:
+        return ["service", "onmyplate", "account", account]
+
+    def get(self, account: str) -> str | None:
+        result = _run([self.tool, "lookup", *self._attributes(account)])
+        return result.stdout.strip() or None if result.returncode == 0 else None
+
+    def set(self, account: str, token: str) -> None:
+        label = f"{KEYCHAIN_SERVICE} ({account})"
+        result = _run([self.tool, "store", "--label", label, *self._attributes(account)], token)
+        self._verify(account, token, result.stderr)
+
+    def delete(self, account: str) -> bool:
+        return _run([self.tool, "clear", *self._attributes(account)]).returncode == 0
+
+
+class WindowsKeychain(Keychain):
+    label = "the Windows Credential Manager"
+
+    def __init__(self) -> None:
+        import ctypes  # noqa: PLC0415 - Windows only
+        from ctypes import wintypes  # noqa: PLC0415
+
+        class Credential(ctypes.Structure):
+            _fields_: ClassVar = [
+                ("Flags", wintypes.DWORD),
+                ("Type", wintypes.DWORD),
+                ("TargetName", wintypes.LPWSTR),
+                ("Comment", wintypes.LPWSTR),
+                ("LastWritten", wintypes.FILETIME),
+                ("CredentialBlobSize", wintypes.DWORD),
+                ("CredentialBlob", ctypes.POINTER(ctypes.c_ubyte)),
+                ("Persist", wintypes.DWORD),
+                ("AttributeCount", wintypes.DWORD),
+                ("Attributes", ctypes.c_void_p),
+                ("TargetAlias", wintypes.LPWSTR),
+                ("UserName", wintypes.LPWSTR),
+            ]
+
+        api = ctypes.WinDLL("advapi32", use_last_error=True)  # type: ignore[attr-defined]
+        pointer = ctypes.POINTER(Credential)
+        api.CredReadW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.POINTER(pointer),
+        ]
+        api.CredReadW.restype = wintypes.BOOL
+        api.CredWriteW.argtypes = [pointer, wintypes.DWORD]
+        api.CredWriteW.restype = wintypes.BOOL
+        api.CredDeleteW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD]
+        api.CredDeleteW.restype = wintypes.BOOL
+        api.CredFree.argtypes = [ctypes.c_void_p]
+        api.CredFree.restype = None
+        self.ctypes, self.api, self.credential, self.pointer = ctypes, api, Credential, pointer
+
+    @staticmethod
+    def _target(account: str) -> str:
+        return f"{KEYCHAIN_SERVICE}/{account}"
+
+    def get(self, account: str) -> str | None:
+        ctypes, found = self.ctypes, self.pointer()
+        if not self.api.CredReadW(self._target(account), 1, 0, ctypes.byref(found)):
+            return None
+        try:
+            size = found.contents.CredentialBlobSize
+            return ctypes.string_at(found.contents.CredentialBlob, size).decode("utf-8") or None
+        finally:
+            self.api.CredFree(found)
+
+    def set(self, account: str, token: str) -> None:
+        ctypes, data = self.ctypes, token.encode("utf-8")
+        blob = (ctypes.c_ubyte * len(data)).from_buffer_copy(data)
+        credential = self.credential()
+        credential.Type = 1  # CRED_TYPE_GENERIC
+        credential.TargetName = self._target(account)
+        credential.UserName = account
+        credential.CredentialBlobSize = len(data)
+        credential.CredentialBlob = ctypes.cast(blob, ctypes.POINTER(ctypes.c_ubyte))
+        credential.Persist = 2  # CRED_PERSIST_LOCAL_MACHINE: this user on this machine
+        ok = self.api.CredWriteW(ctypes.byref(credential), 0)
+        self._verify(account, token, "" if ok else f"error {ctypes.get_last_error()}")
+
+    def delete(self, account: str) -> bool:
+        return bool(self.api.CredDeleteW(self._target(account), 1, 0))
+
+
+_KEYCHAIN: Keychain | bool | None = False  # False: not looked up yet
+
+
+def system_keychain() -> Keychain | None:
+    """The keychain of this system, or None if there is none On My Plate can use."""
+    global _KEYCHAIN
+    if _KEYCHAIN is False:
+        keychain: Keychain | None = None
+        if sys.platform == "darwin" and Path("/usr/bin/security").exists():
+            keychain = MacKeychain()
+        elif os.name == "nt":
+            try:
+                keychain = WindowsKeychain()
+            except (OSError, AttributeError):
+                keychain = None
+        elif tool := shutil.which("secret-tool"):
+            keychain = SecretServiceKeychain(tool)
+        _KEYCHAIN = keychain
+    return _KEYCHAIN if isinstance(_KEYCHAIN, Keychain) else None
+
+
+_COMMAND_TOKENS: dict[str, str] = {}
+
+
+def command_token(command: object, label: str) -> str:
+    """Run the configured token_command (a password manager or keychain CLI) once per start."""
+    if not isinstance(command, str) or not command.strip():
+        raise SourceError(f'{label}: "token_command" must be a command line')
+    if command not in _COMMAND_TOKENS:
+        try:
+            result = _run(shlex.split(command))
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            raise SourceError(
+                f"{label}: token_command could not run ({type(exc).__name__}). "
+                "Check the command in the config."
+            ) from None
+        if result.returncode != 0 or not result.stdout.strip():
+            raise SourceError(
+                f"{label}: token_command failed (exit {result.returncode}). "
+                "Run it in a terminal to see why."
+            )
+        _COMMAND_TOKENS[command] = result.stdout.strip()
+    return _COMMAND_TOKENS[command]
+
+
+def resolve_token(name: str, cfg: dict[str, Any], base: str) -> tuple[str, str]:
+    """Return ``(token, origin)``: environment, token_command, then the system keychain.
+
+    A "token" in the config is only honoured in memory: load_config moves tokens from
+    the file into the keychain before a source ever sees them.
+    """
+    env = os.environ.get(SOURCE_ENV_VARS[name])
+    if env:
+        return env.strip(), "env"
+    if cfg.get("token_command"):
+        return command_token(cfg["token_command"], SOURCE_LABELS[name]), "command"
+    if cfg.get("token"):
+        return str(cfg["token"]).strip(), "config"
+    keychain = system_keychain()
+    stored = keychain.get(token_account(name, base)) if keychain else None
+    return (stored, "keychain") if stored else ("", "")
+
+
+def move_tokens_to_keychain(path: Path, user: dict[str, Any]) -> list[str]:
+    """Move plaintext tokens out of the config file into the keychain; return the sources moved."""
+    moved = []
+    for name in SOURCE_NAMES:
+        section = user.get(name)
+        if not isinstance(section, dict) or not section.get("token"):
+            continue
+        keychain = system_keychain()
+        if keychain is None:
+            raise SourceError(NO_KEYCHAIN.format(env=SOURCE_ENV_VARS[name]))
+        token = str(section["token"]).strip()
+        if not RE_STORABLE_TOKEN.fullmatch(token):
+            raise SourceError(
+                f"{SOURCE_LABELS[name]}: the token in the config contains spaces, quotes or control characters"
+            )
+        keychain.set(token_account(name, section.get("url") or DEFAULT_CONFIG[name]["url"]), token)
+        del section["token"]
+        moved.append(SOURCE_LABELS[name])
+    if moved:
+        write_private(path, json.dumps(user, indent=2, ensure_ascii=False))
+    return moved
 
 
 # --------------------------------------------------------------------------- #
@@ -777,9 +1040,12 @@ class Source:
         self.base = cfg["url"].rstrip("/")
         self.label = SOURCE_LABELS[self.name]
         require_https(self.base, cfg, self.label)
-        self.token = str(os.environ.get(self.env_var) or cfg.get("token") or "").strip()
+        self.token, self.token_origin = resolve_token(self.name, cfg, self.base)
         if not self.token:
-            raise SourceError(f"{self.label}: no token configured")
+            raise SourceError(
+                f"{self.label}: no token. Store it in the system keychain with "
+                f"'onmyplate --set-token {self.name}', or set {self.env_var} or \"token_command\"."
+            )
         if not self.token.isprintable() or any(ch.isspace() for ch in self.token):
             raise SourceError(f"{self.label}: the token contains spaces or control characters")
 
@@ -2106,6 +2372,7 @@ class Store:
         self.refresh_lock = threading.Lock()
         self.by_source: dict[str, dict[str, Any]] = {}
         self.source_errors: dict[str, str] = {}
+        self.token_origins: dict[str, str] = {}
         self.errors: list[str] = []
         self.warnings: list[str] = []
         self.static_warnings: list[str] = []
@@ -2140,7 +2407,11 @@ class Store:
         if not isinstance(user, dict):
             reason = user if isinstance(user, Exception) else "not a JSON object"
             return f"Config: cannot read {self.config_path.name} ({reason}), keeping the previous settings"
-        self.cfg, self.config_mtime = merge_config(DEFAULT_CONFIG, user), mtime
+        try:
+            move_tokens_to_keychain(self.config_path, user)
+        except SourceError as exc:
+            return f"Config not read: {exc} Keeping the previous settings."
+        self.cfg, self.config_mtime = merge_config(DEFAULT_CONFIG, user), self._mtime()
         self._check_verify_ssl()
         with self.lock:
             for name in list(self.by_source):
@@ -2157,11 +2428,15 @@ class Store:
             if not section.get("enabled"):
                 continue
             try:
-                sources.append(SOURCE_CLASSES[name](section, http))
+                source = SOURCE_CLASSES[name](section, http)
             except SourceError as exc:
                 errors[name] = str(exc)
+                self.token_origins.pop(name, None)
             except KeyError as exc:
                 errors[name] = f"{name}: config entry {exc} is missing"
+            else:
+                sources.append(source)
+                self.token_origins[name] = source.token_origin
         return sources, errors
 
     def refresh(self) -> None:
@@ -2230,14 +2505,13 @@ class Store:
         sources = []
         for name in SOURCE_NAMES:
             section = self.cfg.get(name) or {}
-            env = os.environ.get(SOURCE_CLASSES[name].env_var)
             sources.append(
                 {
                     "name": name,
                     "label": SOURCE_LABELS[name],
                     "enabled": bool(section.get("enabled")),
                     "url": sanitize(section.get("url") or "", 300),
-                    "token": "env" if env else "file" if section.get("token") else "",
+                    "token": self.token_origins.get(name, ""),
                     "ok_at": (self.by_source.get(name) or {}).get("ok_at"),
                     "error": sanitize(self.source_errors.get(name, ""), 500),
                 }
@@ -2577,6 +2851,18 @@ def parse_args() -> argparse.Namespace:
         "--import", dest="import_zip", metavar="ZIP", help="restore a backup and exit"
     )
     parser.add_argument(
+        "--set-token",
+        choices=SOURCE_NAMES,
+        metavar="SOURCE",
+        help="store the token for jira, gitlab or bitbucket in the system keychain and exit",
+    )
+    parser.add_argument(
+        "--delete-token",
+        choices=SOURCE_NAMES,
+        metavar="SOURCE",
+        help="remove the stored token for jira, gitlab or bitbucket from the system keychain and exit",
+    )
+    parser.add_argument(
         "--licenses",
         action="store_true",
         help="show the license of On My Plate and of the third-party software it ships, and exit",
@@ -2604,14 +2890,53 @@ def licenses_text() -> str:
     return "\n".join(parts).rstrip() + "\n"
 
 
+def run_token(name: str, config_path: Path, delete: bool = False) -> None:
+    """Store (asked for without echo, or read from a pipe) or delete a source's token."""
+    cfg = load_config(config_path)
+    if cfg is None:
+        return
+    label, url = SOURCE_LABELS[name], (cfg.get(name) or {}).get("url")
+    if url == DEFAULT_CONFIG[name]["url"]:
+        raise SystemExit(
+            f"Set {name}.url in {config_path} first: the token is stored for that host."
+        )
+    keychain = system_keychain()
+    if keychain is None:
+        raise SystemExit(NO_KEYCHAIN.format(env=SOURCE_ENV_VARS[name]))
+    try:
+        account = token_account(name, url)
+    except SourceError as exc:
+        raise SystemExit(str(exc)) from None
+    host = account.split("@", 1)[1]
+    if delete:
+        found = keychain.delete(account)
+        print(
+            f"{'Removed' if found else 'There was no'} {label} token for {host} in {keychain.label}."
+        )
+        return
+    prompt = f"{label} token for {host} (not shown): "
+    token = (getpass.getpass(prompt) if sys.stdin.isatty() else sys.stdin.readline()).strip()
+    if not RE_STORABLE_TOKEN.fullmatch(token):
+        raise SystemExit(
+            "That is not a token: it is empty or contains spaces, quotes or control characters."
+        )
+    try:
+        keychain.set(account, token)
+    except SourceError as exc:
+        raise SystemExit(str(exc)) from None
+    print(f"Stored the {label} token for {host} in {keychain.label}.")
+    print("Start On My Plate, or press Refresh (R) if it is already running.")
+
+
 def run_export(target: Path, include_config: bool) -> None:
     migrate_legacy_todos()
     write_private(target, make_backup(include_config=include_config))
     print(f"Backup written: {target.resolve()}")
     if include_config:
-        print("  Contains the config including tokens: keep it safe and delete it after the move!")
+        print("  Contains the config. Tokens stay in the keychain and are not included.")
     else:
-        print("  Without config or tokens: enter new tokens on the new machine.")
+        print("  Without config or tokens.")
+    print("  On the new machine, store the tokens again with --set-token.")
 
 
 def run_import(source: Path) -> None:
@@ -2620,7 +2945,9 @@ def run_import(source: Path) -> None:
     if backed_up:
         print(f"  Existing files kept as *.bak-{stamp}: {', '.join(backed_up)}")
     if CONFIG_FILE not in restored:
-        print("  Next: run python3 onmyplate.py and fill in the config with new tokens.")
+        print(
+            "  Next: run python3 onmyplate.py, fill in the config and store tokens with --set-token."
+        )
         return
     # A config from someone else could send your tokens elsewhere, so show where they go.
     cfg = merge_config(DEFAULT_CONFIG, json.loads(PATHS.config.read_text("utf-8")))
@@ -2643,7 +2970,17 @@ def load_config(path: Path) -> dict[str, Any] | None:
         write_private(path, json.dumps(DEFAULT_CONFIG, indent=2, ensure_ascii=False))
         print(CONFIG_HELP.format(path=path, script=Path(sys.argv[0]).name))
         return None
-    return merge_config(DEFAULT_CONFIG, json.loads(path.read_text("utf-8")))
+    user = json.loads(path.read_text("utf-8"))
+    try:
+        moved = move_tokens_to_keychain(path, user)
+    except SourceError as exc:
+        raise SystemExit(f"Not starting: {exc}") from None
+    if moved:
+        keychain = system_keychain()
+        print(
+            f"  Moved the {', '.join(moved)} token from {path.name} into {keychain.label if keychain else 'the keychain'}."
+        )
+    return merge_config(DEFAULT_CONFIG, user)
 
 
 def open_browser(code: str, url: str) -> None:
@@ -2684,6 +3021,10 @@ def main() -> None:
     else:
         set_data_dir(args.data_dir or os.environ.get("ONMYPLATE_HOME") or default_data_dir())
 
+    if args.set_token or args.delete_token:
+        config_path = Path(args.config).expanduser() if args.config else PATHS.config
+        run_token(args.set_token or args.delete_token, config_path, delete=bool(args.delete_token))
+        return
     if args.export:
         run_export(Path(args.export).expanduser(), args.with_config)
         return
@@ -2705,8 +3046,8 @@ def main() -> None:
     )
     if not args.demo and is_readable_by_others(config_path):
         message = (
-            f"Security: {config_path.name} is readable by other users (it contains "
-            f"tokens). Fix: chmod 600 {config_path}"
+            f"Security: {config_path.name} is readable by other users (it names your "
+            f"servers and settings). Fix: chmod 600 {config_path}"
         )
         print("  ! " + message)
         store.static_warnings.append(message)
@@ -4006,14 +4347,16 @@ function renderSetup() {
   const st = data.setup || {};
   const rows = (st.sources || []).map(x => {
     const state = !x.enabled ? `<span class="off">off</span>` : x.error ? `<span class="bad">Error</span>` : x.ok_at ? `<span class="ok">OK</span>` : `<span class="off">not checked yet</span>`;
-    const tok = !x.enabled ? "" : x.token === "env" ? "from environment" : x.token === "file" ? "in config" : `<span class="bad">missing</span>`;
+    const tok = !x.enabled ? "" : { keychain: "system keychain", env: "environment variable", command: "token_command", config: "config" }[x.token]
+      || (x.error ? `<span class="bad">missing</span>` : "not checked yet");
     return `<tr><td>${esc(x.label)}</td><td>${state}</td><td>${x.enabled ? esc(x.url || "") : "—"}</td><td>${tok}</td></tr>
       ${x.error ? `<tr><td></td><td colspan="3" class="bad" style="font-weight:400">${esc(x.error)}</td></tr>` : ""}`;
   }).join("");
   $("#setup").innerHTML = `<h4 id="setupTitle">Sources</h4>${data.demo ? "<p>Demo mode: sample data, no sources are contacted.</p>" : ""}
     ${rows ? `<table><thead><tr><th>Source</th><th>Status</th><th>URL</th><th>Token</th></tr></thead><tbody>${rows}</tbody></table>` : ""}
-    ${st.config ? `<p>Change URLs, tokens or sources in <code>${esc(st.config)}</code>, then press <b>Refresh</b>: the file is read again, no restart needed.
-      Tokens can also come from <code>ONMYPLATE_JIRA_TOKEN</code>, <code>ONMYPLATE_GITLAB_TOKEN</code> and <code>ONMYPLATE_BITBUCKET_TOKEN</code>.</p>` : ""}`;
+    ${st.config ? `<p>Change URLs or sources in <code>${esc(st.config)}</code>, then press <b>Refresh</b>: the file is read again, no restart needed.</p>
+      <p>Tokens are never stored in that file. Store one in the system keychain with <code>onmyplate --set-token jira</code> (or <code>gitlab</code>, <code>bitbucket</code>),
+      or provide it with <code>"token_command"</code> or <code>ONMYPLATE_JIRA_TOKEN</code>, <code>ONMYPLATE_GITLAB_TOKEN</code>, <code>ONMYPLATE_BITBUCKET_TOKEN</code>.</p>` : ""}`;
 }
 $("#help").addEventListener("keydown", e => {   // keep Tab inside the open dialog
   if (e.key !== "Tab") return;

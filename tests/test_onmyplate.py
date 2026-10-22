@@ -25,6 +25,27 @@ wl = importlib.util.module_from_spec(_spec)
 sys.modules["onmyplate"] = wl
 _spec.loader.exec_module(wl)
 
+
+class MemoryKeychain(wl.Keychain):
+    """Stands in for the system keychain, so no test reads or writes the real one."""
+
+    label = "the test keychain"
+
+    def __init__(self) -> None:
+        self.items: dict[str, str] = {}
+
+    def get(self, account: str) -> str | None:
+        return self.items.get(account)
+
+    def set(self, account: str, token: str) -> None:
+        self.items[account] = token
+
+    def delete(self, account: str) -> bool:
+        return self.items.pop(account, None) is not None
+
+
+wl._KEYCHAIN = MemoryKeychain()
+
 NOW_MS = int(time.time() * 1000)
 
 

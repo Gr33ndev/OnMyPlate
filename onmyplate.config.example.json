@@ -9,7 +9,7 @@
     "url": "https://jira.your-company.example",
     "type": "auto",
     "email": "first.last@your-company.example",
-    "token": "",
+    "token_command": null,
     "scoped_token": true,
     "cloud_id": null,
     "include_done": false,
@@ -21,7 +21,7 @@
   "gitlab": {
     "enabled": true,
     "url": "https://gitlab.your-company.example",
-    "token": "",
+    "token_command": null,
     "include_closed": false,
     "include_merge_requests": true,
     "comment_lookback_days": 90,
@@ -33,7 +33,7 @@
   "bitbucket": {
     "enabled": true,
     "url": "https://bitbucket.your-company.example",
-    "token": "",
+    "token_command": null,
     "auth": "bearer",
     "username": "",
     "include_closed": false,

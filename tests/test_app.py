@@ -33,6 +33,12 @@ wl = test_onmyplate.wl
 SCRIPT = test_onmyplate.ROOT / "onmyplate.py"
 
 
+NO_GITLAB_TOKEN = (
+    "GitLab: no token. Store it in the system keychain with 'onmyplate --set-token gitlab', "
+    'or set ONMYPLATE_GITLAB_TOKEN or "token_command".'
+)
+
+
 class DataDirCase(unittest.TestCase):
     """Gives every test a fresh data folder."""
 
@@ -86,8 +92,8 @@ class HelperTests(unittest.TestCase):
         merged = wl.merge_config(wl.DEFAULT_CONFIG, {"port": 1, "jira": {"token": "t"}})
         self.assertEqual(merged["port"], 1)
         self.assertEqual(merged["jira"]["token"], "t")
+        self.assertNotIn("token", wl.DEFAULT_CONFIG["jira"])
         self.assertEqual(merged["jira"]["type"], "auto")
-        self.assertEqual(wl.DEFAULT_CONFIG["jira"]["token"], "")
         self.assertEqual(wl.merge_config({"a": 1}, None), {"a": 1})
 
     def test_example_config_matches_defaults(self) -> None:
@@ -284,6 +290,205 @@ class ConfigTrustTests(DataDirCase):
         self.assertNotIn("evil", json.dumps(store.cfg))
 
 
+class TokenStorageTests(DataDirCase):
+    """Tokens live in the system keychain (here: a memory stand-in), never in the config file."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.root.chmod(0o700)
+        self.keychain = test_onmyplate.MemoryKeychain()
+        patcher = mock.patch.object(wl, "_KEYCHAIN", self.keychain)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        wl._COMMAND_TOKENS.clear()
+        env = mock.patch.dict(os.environ, {}, clear=True)
+        env.start()
+        self.addCleanup(env.stop)
+
+    def write_config(self, **sections: Any) -> Path:
+        path = self.root / "onmyplate.config.json"
+        wl.write_private(path, json.dumps(sections))
+        return path
+
+    def test_lookup_order(self) -> None:
+        cfg = {"url": "https://gitlab.example.com"}
+        self.assertEqual(wl.resolve_token("gitlab", cfg, cfg["url"]), ("", ""))
+        self.keychain.set("gitlab@gitlab.example.com", "from-keychain")
+        self.assertEqual(wl.resolve_token("gitlab", cfg, cfg["url"]), ("from-keychain", "keychain"))
+        command = f"{sys.executable} -c \"print('from-command')\""
+        with_command = {**cfg, "token_command": command}
+        self.assertEqual(
+            wl.resolve_token("gitlab", with_command, cfg["url"]), ("from-command", "command")
+        )
+        os.environ["ONMYPLATE_GITLAB_TOKEN"] = "from-env"
+        self.assertEqual(wl.resolve_token("gitlab", with_command, cfg["url"]), ("from-env", "env"))
+
+    def test_token_belongs_to_one_host(self) -> None:
+        self.keychain.set("jira@jira.example.com", "for-this-host")
+        self.assertEqual(
+            wl.resolve_token("jira", {}, "https://jira.example.com/jira"),
+            ("for-this-host", "keychain"),
+        )
+        self.assertEqual(wl.resolve_token("jira", {}, "https://evil.example"), ("", ""))
+
+    def test_plaintext_tokens_move_out_of_the_config(self) -> None:
+        path = self.write_config(
+            gitlab={"url": "https://gitlab.example.com", "token": "glpat-abc123"},
+            jira={"enabled": False},
+        )
+        with mock.patch("sys.stdout", io.StringIO()) as out:
+            cfg = wl.load_config(path)
+        self.assertIn("Moved the GitLab token", out.getvalue())
+        self.assertNotIn("glpat", path.read_text())
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.keychain.items, {"gitlab@gitlab.example.com": "glpat-abc123"})
+        source = wl.GitLabSource(cfg["gitlab"], wl.HttpClient({}))
+        self.assertEqual((source.token, source.token_origin), ("glpat-abc123", "keychain"))
+
+    def test_without_a_keychain_plaintext_is_refused(self) -> None:
+        path = self.write_config(
+            gitlab={"url": "https://gitlab.example.com", "token": "glpat-abc123"}
+        )
+        with (
+            mock.patch.object(wl, "_KEYCHAIN", None),
+            self.assertRaisesRegex(SystemExit, "plain text"),
+        ):
+            wl.load_config(path)
+
+    def test_tokens_added_while_running_move_on_refresh(self) -> None:
+        path = self.write_config(**{n: {"enabled": False} for n in wl.SOURCE_NAMES})
+        store = wl.Store(
+            wl.merge_config(wl.DEFAULT_CONFIG, json.loads(path.read_text())), config_path=path
+        )
+        off = {n: {"enabled": False} for n in wl.SOURCE_NAMES}
+        wl.write_private(
+            path, json.dumps({**off, "gitlab": {"enabled": False, "token": "glpat-late"}})
+        )
+        os.utime(path, (3, 3))
+        store.refresh()
+        self.assertEqual(store.errors, [])
+        self.assertNotIn("glpat", path.read_text())
+        self.assertEqual(self.keychain.items, {"gitlab@gitlab.your-company.example": "glpat-late"})
+        wl.write_private(
+            path, json.dumps({**off, "gitlab": {"enabled": False, "token": "glpat-x"}})
+        )
+        os.utime(path, (4, 4))
+        with mock.patch.object(wl, "_KEYCHAIN", None):
+            store.refresh()
+        self.assertIn("Config not read", store.errors[0])
+
+    def test_token_command(self) -> None:
+        good = f"{sys.executable} -c \"print('  cmd-token  ')\""
+        self.assertEqual(wl.command_token(good, "GitLab"), "cmd-token")
+        with mock.patch.object(wl, "_run") as run:
+            self.assertEqual(wl.command_token(good, "GitLab"), "cmd-token")
+        run.assert_not_called()  # asked once per start, not on every refresh
+        with self.assertRaisesRegex(wl.SourceError, "token_command failed"):
+            wl.command_token(f'{sys.executable} -c "raise SystemExit(3)"', "GitLab")
+        with self.assertRaisesRegex(wl.SourceError, "could not run"):
+            wl.command_token("/does/not/exist", "GitLab")
+
+    def test_set_and_delete_token(self) -> None:
+        path = self.write_config(gitlab={"url": "https://gitlab.example.com"})
+        with (
+            mock.patch("sys.stdin", io.StringIO("glpat-from-pipe\n")),
+            mock.patch("sys.stdout", io.StringIO()) as out,
+        ):
+            wl.run_token("gitlab", path)
+        self.assertEqual(self.keychain.items, {"gitlab@gitlab.example.com": "glpat-from-pipe"})
+        self.assertIn("Stored the GitLab token for gitlab.example.com", out.getvalue())
+        self.assertNotIn("glpat", out.getvalue() + path.read_text())
+        with mock.patch("sys.stdout", io.StringIO()):
+            wl.run_token("gitlab", path, delete=True)
+        self.assertEqual(self.keychain.items, {})
+        for bad in ("", "has space", 'quo"te'):
+            stdin = mock.patch("sys.stdin", io.StringIO(bad + "\n"))
+            with self.subTest(token=bad), stdin, self.assertRaisesRegex(SystemExit, "not a token"):
+                wl.run_token("gitlab", path)
+
+    def test_set_token_needs_the_url_first(self) -> None:
+        path = self.write_config()
+        with self.assertRaisesRegex(SystemExit, "Set jira.url"):
+            wl.run_token("jira", path)
+
+    def test_real_tokens_are_storable(self) -> None:
+        for token in ("glpat-xY_9z-AbCdEf", "ATATT3xFfGF0aB+c/d==", "NjQ5ODk5MDk1NzY4OkV4YW1wbGU="):
+            self.assertTrue(wl.RE_STORABLE_TOKEN.fullmatch(token), token)
+        for token in ("two words", 'a"b', "a'b", "a\\b", "tab\there"):
+            self.assertIsNone(wl.RE_STORABLE_TOKEN.fullmatch(token), token)
+
+
+@unittest.skipUnless(sys.platform == "darwin" and Path("/usr/bin/security").exists(), "macOS only")
+class MacKeychainTests(unittest.TestCase):
+    """The real macOS backend, against a throw-away keychain file instead of the login keychain."""
+
+    def test_store_read_and_delete(self) -> None:
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        path = str(Path(folder) / "test.keychain-db")
+        security = "/usr/bin/security"
+        subprocess.run(
+            [security, "create-keychain", "-p", "pw", path], check=True, capture_output=True
+        )
+        self.addCleanup(
+            subprocess.run, [security, "delete-keychain", path], capture_output=True, check=False
+        )
+        subprocess.run(
+            [security, "unlock-keychain", "-p", "pw", path], check=True, capture_output=True
+        )
+        keychain = wl.MacKeychain(path)
+        self.assertIsNone(keychain.get("gitlab@gitlab.example.com"))
+        keychain.set("gitlab@gitlab.example.com", "glpat-Real+Token/1=")
+        self.assertEqual(keychain.get("gitlab@gitlab.example.com"), "glpat-Real+Token/1=")
+        keychain.set("gitlab@gitlab.example.com", "glpat-replaced")
+        self.assertEqual(keychain.get("gitlab@gitlab.example.com"), "glpat-replaced")
+        self.assertIsNone(keychain.get("gitlab@other.example.com"))
+        self.assertTrue(keychain.delete("gitlab@gitlab.example.com"))
+        self.assertIsNone(keychain.get("gitlab@gitlab.example.com"))
+
+
+# Writes to the real keychain of the machine, so it runs only where asked for (CI sets it).
+SYSTEM_KEYCHAIN = os.environ.get("ONMYPLATE_TEST_SYSTEM_KEYCHAIN") == "1"
+
+
+@unittest.skipUnless(
+    SYSTEM_KEYCHAIN, "set ONMYPLATE_TEST_SYSTEM_KEYCHAIN=1 to use the real keychain"
+)
+class SystemKeychainTests(unittest.TestCase):
+    """The Linux and Windows backends against the real keychain of a CI machine."""
+
+    ACCOUNT = "gitlab@onmyplate-ci.example"
+
+    def roundtrip(self, keychain: Any) -> None:
+        self.addCleanup(keychain.delete, self.ACCOUNT)
+        keychain.delete(self.ACCOUNT)
+        self.assertIsNone(keychain.get(self.ACCOUNT))
+        keychain.set(self.ACCOUNT, "glpat-Real+Token/1=")
+        self.assertEqual(keychain.get(self.ACCOUNT), "glpat-Real+Token/1=")
+        keychain.set(self.ACCOUNT, "glpat-replaced")
+        self.assertEqual(keychain.get(self.ACCOUNT), "glpat-replaced")
+        self.assertIsNone(keychain.get("gitlab@other-host.example"))
+        self.assertTrue(keychain.delete(self.ACCOUNT))
+        self.assertIsNone(keychain.get(self.ACCOUNT))
+        self.assertFalse(keychain.delete(self.ACCOUNT))
+
+    def detected(self) -> Any:
+        with mock.patch.object(wl, "_KEYCHAIN", False):
+            return wl.system_keychain()
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux only")
+    def test_secret_service(self) -> None:
+        keychain = self.detected()
+        self.assertIsInstance(keychain, wl.SecretServiceKeychain)
+        self.roundtrip(keychain)
+
+    @unittest.skipUnless(os.name == "nt", "Windows only")
+    def test_windows_credential_manager(self) -> None:
+        keychain = self.detected()
+        self.assertIsInstance(keychain, wl.WindowsKeychain)
+        self.roundtrip(keychain)
+
+
 class FileTests(DataDirCase):
     def test_write_private_is_atomic_and_private(self) -> None:
         target = self.root / "f.txt"
@@ -420,7 +625,7 @@ class StoreTests(unittest.TestCase):
             errors,
             {
                 "jira": "jira: config entry 'url' is missing",
-                "gitlab": "GitLab: no token configured",
+                "gitlab": NO_GITLAB_TOKEN,
             },
         )
 
@@ -438,11 +643,11 @@ class StoreTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {}, clear=True):
                 store.refresh()
                 setup = store.snapshot()["setup"]
-            self.assertEqual(store.errors, ["GitLab: no token configured"])
+            self.assertEqual(store.errors, [NO_GITLAB_TOKEN])
             gitlab = next(x for x in setup["sources"] if x["name"] == "gitlab")
             self.assertEqual(
                 (gitlab["enabled"], gitlab["url"], gitlab["token"], gitlab["error"]),
-                (True, "https://gl.example", "", "GitLab: no token configured"),
+                (True, "https://gl.example", "", NO_GITLAB_TOKEN),
             )
             self.assertEqual(setup["config"], str(path))
             path.write_text("{broken")
@@ -451,15 +656,24 @@ class StoreTests(unittest.TestCase):
             self.assertIn("keeping the previous settings", store.errors[0])
             self.assertTrue(store.cfg["gitlab"]["enabled"])
 
-    def test_setup_never_contains_tokens(self) -> None:
+    def test_setup_shows_where_tokens_come_from_but_never_the_tokens(self) -> None:
         cfg = wl.merge_config(
-            wl.DEFAULT_CONFIG, {"jira": {"token": "s3cret-value"}, "gitlab": {"enabled": False}}
+            wl.DEFAULT_CONFIG,
+            {
+                "jira": {"url": "https://jira.example.com"},
+                "gitlab": {"url": "https://gitlab.example.com"},
+                "bitbucket": {"url": "https://bitbucket.example.com"},
+            },
         )
-        with mock.patch.dict(os.environ, {"ONMYPLATE_BITBUCKET_TOKEN": "env-s3cret"}):
-            setup = wl.Store(cfg, config_path=Path("x.json")).snapshot()["setup"]
+        wl._KEYCHAIN.set("jira@jira.example.com", "keychain-s3cret")
+        self.addCleanup(wl._KEYCHAIN.delete, "jira@jira.example.com")
+        with mock.patch.dict(os.environ, {"ONMYPLATE_BITBUCKET_TOKEN": "env-s3cret"}, clear=True):
+            store = wl.Store(cfg, config_path=Path("x.json"))
+            store._sources()
+            setup = store.snapshot()["setup"]
         self.assertNotIn("s3cret", json.dumps(setup))
         tokens = {x["name"]: x["token"] for x in setup["sources"]}
-        self.assertEqual(tokens, {"jira": "file", "gitlab": "", "bitbucket": "env"})
+        self.assertEqual(tokens, {"jira": "keychain", "gitlab": "", "bitbucket": "env"})
         self.assertEqual(
             wl.Store(cfg, demo=True).snapshot()["setup"], {"config": "", "sources": []}
         )
@@ -825,7 +1039,7 @@ class CliTests(unittest.TestCase):
 
         result = run_cli("--export", str(archive), "--with-config", data_dir=source)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("including tokens", result.stdout)
+        self.assertIn("Tokens stay in the keychain", result.stdout)
 
         result = run_cli("--import", str(archive), data_dir=target)
         self.assertEqual(result.returncode, 0, result.stderr)

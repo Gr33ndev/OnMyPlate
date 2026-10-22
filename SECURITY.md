@@ -18,6 +18,7 @@ In scope, for example:
 
 - Ways for a web page, another local user or process, or a malicious server response to read your tokens, tasks or ticket data, or to act through the local API.
 - Ways to make On My Plate send anything other than read requests, or send tokens to an unexpected host.
+- Ways to make a token end up in plain text on disk, in a log or in the browser.
 - Script injection into the UI or into `onmyplate.todos.md`.
 
 Out of scope:
