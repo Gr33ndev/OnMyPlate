@@ -61,6 +61,18 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(wl.sanitize("x" * 10, 3), "xxx")
         self.assertEqual(wl.sanitize(None), "None")
 
+    def test_command_name_matches_how_we_were_started(self) -> None:
+        # pip/pipx installs run an entry point, so "python3 onmyplate" would not exist.
+        for argv0, expected in [
+            ("/Users/sam/.local/bin/onmyplate", "onmyplate"),
+            ("onmyplate.py", "python3 onmyplate.py"),
+            ("/opt/tools/onmyplate.py", "python3 onmyplate.py"),
+        ]:
+            with self.subTest(argv0=argv0), mock.patch.object(sys, "argv", [argv0]):
+                self.assertEqual(wl.command_name(), expected)
+                help_text = wl.CONFIG_HELP.format(path="cfg.json", command=wl.command_name())
+                self.assertIn(f"\n  {expected} --set-token jira\n", help_text)
+
     def test_to_iso(self) -> None:
         self.assertEqual(wl.to_iso("2026-10-20T10:00:00.000+0200"), "2026-10-20T10:00:00+02:00")
         self.assertEqual(wl.to_iso("2026-10-20T08:00:00Z"), "2026-10-20T08:00:00+00:00")
