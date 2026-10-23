@@ -4,6 +4,8 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.1.4] – 2026-10-23
+
 ### Fixed
 - After installing with pip or pipx, the first-run help and the token hints show `onmyplate --set-token …` instead of `python3 onmyplate --set-token …`, which failed with "No such file or directory". Started as a script they still show `python3 onmyplate.py`.
 
@@ -66,7 +68,8 @@ First public release.
   - Server fields checked and cleaned before they reach the UI.
   - A config that another user could change is refused, so nobody can redirect tokens.
 
-[Unreleased]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.0...v0.1.1
