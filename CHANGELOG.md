@@ -4,6 +4,9 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+- After installing with pip or pipx, the first-run help and the token hints show `onmyplate --set-token …` instead of `python3 onmyplate --set-token …`, which failed with "No such file or directory". Started as a script they still show `python3 onmyplate.py`.
+
 ## [0.1.3] – 2026-10-22
 
 ### Fixed

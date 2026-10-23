@@ -601,6 +601,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
 }
 
+
+def command_name() -> str:
+    """How the user started us, for hints: the pip/pipx command or the script file."""
+    name = Path(sys.argv[0]).name
+    # An installed entry point is a plain command; only a .py file needs the interpreter.
+    return f"python3 {name}" if name.endswith(".py") else "onmyplate"
+
+
 CONFIG_HELP = """
 Config created: {path}
 
@@ -614,10 +622,13 @@ Please fill in:
   bitbucket    – Bitbucket Data Center: url, including any context path
 
 Tokens never go into this file. Store each one in the system keychain (asked for, not shown):
-  python3 {script} --set-token jira        Data Center: personal access token (Jira 8.14+);
-                                           Cloud: API token with scopes read:jira-work + read:jira-user
-  python3 {script} --set-token gitlab      personal access token with ONLY the "read_api" scope
-  python3 {script} --set-token bitbucket   personal HTTP access token, Project read + Repository read
+  {command} --set-token jira
+      Data Center: personal access token (Jira 8.14+);
+      Cloud: API token with scopes read:jira-work + read:jira-user
+  {command} --set-token gitlab
+      personal access token with ONLY the "read_api" scope
+  {command} --set-token bitbucket
+      personal HTTP access token, Project read + Repository read
 Or let a password manager provide it: "token_command": "op read op://Private/GitLab/token"
 
 Team repos (open PRs/MRs, plus mention search on Bitbucket), optional:
@@ -627,7 +638,7 @@ Team repos (open PRs/MRs, plus mention search on Bitbucket), optional:
 On My Plate only reads. Write requests are blocked in the code.
 
 To skip a source, set "enabled": false.
-Then start again:  python3 {script}
+Then start again:  {command}
 """
 
 
@@ -1044,7 +1055,8 @@ class Source:
         if not self.token:
             raise SourceError(
                 f"{self.label}: no token. Store it in the system keychain with "
-                f"'onmyplate --set-token {self.name}', or set {self.env_var} or \"token_command\"."
+                f"'{command_name()} --set-token {self.name}', "
+                f'or set {self.env_var} or "token_command".'
             )
         if not self.token.isprintable() or any(ch.isspace() for ch in self.token):
             raise SourceError(f"{self.label}: the token contains spaces or control characters")
@@ -3107,7 +3119,7 @@ def run_import(source: Path) -> None:
         print(f"  Existing files kept as *.bak-{stamp}: {', '.join(backed_up)}")
     if CONFIG_FILE not in restored:
         print(
-            "  Next: run python3 onmyplate.py, fill in the config and store tokens with --set-token."
+            f"  Next: run {command_name()}, fill in the config and store tokens with --set-token."
         )
         return
     # A config from someone else could send your tokens elsewhere, so show where they go.
@@ -3129,7 +3141,7 @@ def load_config(path: Path) -> dict[str, Any] | None:
         raise SystemExit(f"Not starting: the config decides where tokens go, but {reason}.")
     if not path.exists():
         write_private(path, json.dumps(DEFAULT_CONFIG, indent=2, ensure_ascii=False))
-        print(CONFIG_HELP.format(path=path, script=Path(sys.argv[0]).name))
+        print(CONFIG_HELP.format(path=path, command=command_name()))
         return None
     user = json.loads(path.read_text("utf-8"))
     try:
