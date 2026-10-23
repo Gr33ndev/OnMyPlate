@@ -233,7 +233,7 @@ onmyplate.py               the whole tool, including the embedded web UI
 tests/                     unittest suites with fake Jira, GitLab and Bitbucket servers
 tools/ui.py                extract / embed the web UI for editing
 docs/                      screenshots and the GitHub Pages site
-.github/workflows/         CI (tests on Python 3.11-3.14, ruff, bandit, ESLint) and Pages
+.github/workflows/         CI (tests on Python 3.11-3.14, ruff, bandit, ESLint), Pages and Release
 ```
 
 The UI is embedded in `onmyplate.py` so the tool stays a single file. To work on it as a normal HTML/JS file:

@@ -31,7 +31,7 @@ These are product decisions, not style preferences. Do not break them, even if a
 | `tools/third_party_licenses.py` | Generates `THIRD_PARTY_LICENSES.md` and the `LICENSES` block in `onmyplate.py` (between `# BEGIN/END GENERATED LICENSES`) from the runtime dependencies; `--check` runs in CI. Never edit that block by hand. |
 | `LICENSE`, `NOTICE`, `THIRD_PARTY_LICENSES.md` | Own MIT license, trademark and format notes, generated third-party list. Shown in the app under ? > About & licenses (`/api/licenses`) and by `--licenses`. |
 | `docs/` | Screenshots used by the README and the GitHub Pages site (`docs/index.html`, `docs/impressum.html`, shared `docs/style.css`, plus the generated `docs/demo/`). Every page links the Impressum in its footer. |
-| `.github/workflows/` | `ci.yml` (tests on 3.11–3.14, ruff, bandit, ESLint) and `pages.yml` (deploys `docs/`). |
+| `.github/workflows/` | `ci.yml` (tests on 3.11–3.14, ruff, bandit, ESLint), `pages.yml` (deploys `docs/`) and `release.yml` (started by hand after a `chore(release)` commit: tags `main`, builds and publishes the GitHub release with `SHA256SUMS`). |
 
 ## Commands
 
