@@ -11,6 +11,7 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ### Fixed
 - Opening or closing an item no longer scrolls its column back to the top.
+- Clicking the text of the "Pull Requests" tab opens it; before, only a click on the tab's edge did.
 
 ## [0.1.4] – 2026-10-23
 

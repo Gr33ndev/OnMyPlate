@@ -139,6 +139,10 @@ class HelperTests(unittest.TestCase):
         self.assertIsNone(re.search(r"""(src|href)=["']https?://""", wl.INDEX_HTML))
         self.assertNotIn("@import", wl.INDEX_HTML)
 
+    def test_ui_clicks_resolve_the_button(self) -> None:
+        # Buttons hold spans; a click on the text targets the span, not the button.
+        self.assertNotIn("e.target.dataset.v", wl.INDEX_HTML)
+
     def test_versions_agree(self) -> None:
         pyproject = (test_onmyplate.ROOT / "pyproject.toml").read_text()
         self.assertIn(f'version = "{wl.VERSION}"', pyproject)

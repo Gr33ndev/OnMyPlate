@@ -4602,10 +4602,10 @@ async function refresh() {
 
 // --- Events -----------------------------------------------------------------
 $("#q").addEventListener("input", e => { ui.q = e.target.value; render(); });
-$("#view").addEventListener("click", e => { const v = e.target.dataset.v; if (v) { ui.view = v; ui.open = null; saveUi(); render(); } });
-$("#source").addEventListener("click", e => { const v = e.target.dataset.v; if (v) { ui.source = v; saveUi(); render(); } });
+$("#view").addEventListener("click", e => { const v = e.target.closest("button[data-v]")?.dataset.v; if (v) { ui.view = v; ui.open = null; saveUi(); render(); } });
+$("#source").addEventListener("click", e => { const v = e.target.closest("button[data-v]")?.dataset.v; if (v) { ui.source = v; saveUi(); render(); } });
 $("#states").addEventListener("click", e => {
-  const v = e.target.dataset.v; if (!v) return;
+  const v = e.target.closest("button[data-v]")?.dataset.v; if (!v) return;
   ui.states = ui.states.includes(v) ? ui.states.filter(x => x !== v) : [...ui.states, v];
   saveUi(); render();
 });
