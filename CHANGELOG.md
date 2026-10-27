@@ -4,6 +4,14 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Added
+- GitLab issues take their status from board lists made of plain labels ("Doing", "Test"), not only from `workflow::` or `status::` labels. With several, the right-most list wins, as on the board.
+- "Next up" shows issues in a test, QA or review status as their own group, "In test or review", at the bottom.
+- Pull requests link the Jira issues they name in the title or branch, or link in the description. A Jira issue in turn lists the PRs that name it.
+
+### Fixed
+- Opening or closing an item no longer scrolls its column back to the top.
+
 ## [0.1.4] – 2026-10-23
 
 ### Fixed

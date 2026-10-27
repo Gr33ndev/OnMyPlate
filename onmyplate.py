@@ -79,7 +79,7 @@ import urllib.request
 import webbrowser
 import xml.etree.ElementTree as ET
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -1072,6 +1072,27 @@ class Source:
 JIRA_STATE = {"new": "todo", "indeterminate": "in_progress", "done": "done"}
 RE_CLOUD_ID = re.compile(r"[0-9a-fA-F-]{20,64}")
 RE_JIRA_KEY = re.compile(r"[A-Z][A-Z0-9_]*-\d+")
+RE_JIRA_KEY_IN_TEXT = re.compile(r"(?<![\w-])[A-Z][A-Z0-9_]*-\d+(?![A-Za-z0-9])")
+RE_JIRA_BROWSE_LINK = re.compile(r"/browse/([A-Z][A-Z0-9_]*-\d+)(?![A-Za-z0-9])")
+
+
+def jira_keys(title: object, branch: object, description: object) -> list[str]:
+    """Jira issues a pull request refers to.
+
+    Bare keys count in the title and branch only; in the description they need a
+    /browse/ link, since free text is full of look-alikes such as UTF-8.
+    """
+    found = [
+        key
+        for text in (title, branch)
+        if isinstance(text, str)
+        for key in RE_JIRA_KEY_IN_TEXT.findall(text)
+    ]
+    if isinstance(description, str):
+        found += RE_JIRA_BROWSE_LINK.findall(description)
+    return list(dict.fromkeys(found))[:10]
+
+
 ATOM = "{http://www.w3.org/2005/Atom}"
 
 
@@ -1408,6 +1429,8 @@ GITLAB_TODO_RELATIONS = {
     "assigned": "assignee",
 }
 RE_GITLAB_PATH = re.compile(r"[\w.\-]+(/[\w.\-]+)*")
+# Workflow or board list names that mean someone is working on the issue.
+IN_PROGRESS_WORDS = re.compile(r"doing|progress|review|arbeit|test|qa\b|verif", re.IGNORECASE)
 
 
 class GitLabSource(Source):
@@ -1471,10 +1494,7 @@ class GitLabSource(Source):
         workflow = self._scoped_label(labels, "workflow", "status")
         if state in ("closed", "merged"):
             category = "done"
-        elif (kind == "mr" and not draft) or (
-            workflow
-            and any(w in workflow.lower() for w in ("doing", "progress", "review", "arbeit"))
-        ):
+        elif (kind == "mr" and not draft) or (workflow and IN_PROGRESS_WORDS.search(workflow)):
             category = "in_progress"
         else:
             category = "todo"
@@ -1518,6 +1538,11 @@ class GitLabSource(Source):
             "labels": labels,
             "relations": set(),
             "branch": branch,
+            "jira_keys": jira_keys(
+                raw.get("title"), raw.get("source_branch"), raw.get("description")
+            )
+            if kind == "mr"
+            else [],
         }
 
     def fetch(self) -> FetchResult:
@@ -1575,6 +1600,7 @@ class GitLabSource(Source):
         self._add_from_todos(items, add, warnings)
         self._add_team_merge_requests(add, warnings)
         self._add_commented(by_ref, add, warnings)
+        self._apply_board_lists(items.values(), warnings)
 
         for item in items.values():
             prune_relations(item["relations"])
@@ -1698,6 +1724,57 @@ class GitLabSource(Source):
                 if raw:
                     add(raw, kind, "commented")
 
+    def _apply_board_lists(self, items: Iterable[Item], warnings: list[str]) -> None:
+        """Take the status of issues without a workflow:: label from their board lists.
+
+        Board lists are often plain labels ("Doing", "Test"). An issue carrying several
+        of them is in the right-most list, as on the board.
+        """
+        issues = [
+            it
+            for it in items
+            if it["id"].startswith("gitlab:issue:")
+            and it["state"] != "done"
+            and not self._scoped_label(it["labels"], "workflow", "status")
+        ]
+        projects = {it["project"] for it in issues if RE_GITLAB_PATH.fullmatch(it["project"])}
+        paths = [("projects", p) for p in sorted(projects)]
+        groups = {p.rsplit("/", n)[0] for p in projects for n in range(1, p.count("/") + 1)}
+        paths += [("groups", g) for g in sorted(groups)]
+        cap = int(self.cfg.get("max_board_lookups", 60))
+        if len(paths) > cap:
+            warnings.append(f"GitLab: read the boards of only {cap} projects and groups.")
+
+        def boards(entry: tuple[str, str]) -> tuple[list[Any], SourceError | None]:
+            scope, path = entry
+            try:
+                return self.paged(f"/{scope}/{urllib.parse.quote(path, safe='')}/boards", {}), None
+            except SourceError as exc:
+                # Without access to a group or with boards switched off there is nothing to read.
+                return [], None if "HTTP 403" in str(exc) or "HTTP 404" in str(exc) else exc
+
+        positions: dict[str, tuple[int, str]] = {}
+        failed = 0
+        with ThreadPoolExecutor(6) as pool:
+            for found, error in pool.map(boards, paths[:cap]):
+                failed += error is not None
+                for board in found:
+                    for lst in (board.get("lists") or []) if isinstance(board, dict) else []:
+                        name = ((lst or {}).get("label") or {}).get("name")
+                        if isinstance(name, str) and name:
+                            pos = lst.get("position") if isinstance(lst.get("position"), int) else 0
+                            if pos >= positions.get(name.lower(), (-1, ""))[0]:
+                                positions[name.lower()] = (pos, name)
+        if failed:
+            warnings.append(f"GitLab: cannot read {failed} boards, statuses may be missing.")
+
+        for it in issues:
+            on_board = [positions[lbl.lower()] for lbl in it["labels"] if lbl.lower() in positions]
+            if on_board:
+                it["status"] = max(on_board)[1]
+                if it["state"] == "todo" and IN_PROGRESS_WORDS.search(it["status"]):
+                    it["state"] = "in_progress"
+
 
 # --------------------------------------------------------------------------- #
 # Bitbucket Data Center / Server
@@ -1808,6 +1885,7 @@ class BitbucketSource(Source):
             "labels": [],
             "relations": set(),
             "branch": f"{source_ref} → {target_ref}" if source_ref else "",
+            "jira_keys": jira_keys(pr.get("title"), source_ref, pr.get("description")),
             "_needs_work": needs_work,
             "_open": state == "OPEN",
             "_scan": (project, slug, pr_id, pr.get("updatedDate"), pr.get("description") or ""),
@@ -2060,6 +2138,12 @@ def demo_items(sources: tuple[str, ...] = SOURCE_NAMES) -> list[Item]:
     if "jira" not in sources:
         _convert_jira_demo_items(items)
     items += _demo_pull_requests()
+    # Some PRs name a Jira issue, as teams do in the title or description.
+    jira = [item["key"] for item in items if item["source"] == "jira"]
+    prs = [item for item in items if item["type"] in ("PR", "MR")]
+    for index, (pr, key) in enumerate(zip(prs, jira, strict=False)):
+        if index % 2 == 0:
+            pr["jira_keys"] = [key]
     for item in items:
         if item["type"] in ("PR", "MR") and not item.get("branch"):
             slug = re.sub(r"[^a-z0-9]+", "-", item["title"].lower()).strip("-")[:28]
@@ -2587,6 +2671,12 @@ def coerce_item(item: Item) -> Item:
         [sanitize(lbl, 100) for lbl in labels[:50]] if isinstance(labels, list) else []
     )
     clean["relations"] = sorted(RELATIONS.intersection(item.get("relations") or ()))
+    keys = item.get("jira_keys")
+    clean["jira_keys"] = (
+        [k for k in keys[:10] if isinstance(k, str) and RE_JIRA_KEY.fullmatch(k)]
+        if isinstance(keys, list)
+        else []
+    )
     return clean
 
 
@@ -3510,6 +3600,9 @@ span.key { text-decoration: none; }
 .detail .facts b { color: var(--text); font-weight: 550; }
 .tags { display: flex; gap: 4px; flex-wrap: wrap; }
 .tag { font-size: 11px; background: var(--st-todo); color: var(--st-todo-t); border-radius: 4px; padding: 0 6px; }
+a.tag, button.tag { border: 0; font: inherit; font-size: 11px; text-decoration: none; cursor: pointer; }
+a.tag:hover, button.tag:hover { text-decoration: underline; }
+.tags .lk { font-size: 11px; color: var(--muted); }
 textarea {
   width: 100%; min-height: 60px; resize: vertical; border: 1px solid var(--border-strong);
   border-radius: 8px; padding: 7px 9px; background: var(--panel); outline: none;
@@ -3993,6 +4086,25 @@ const keyLink = (it) => safeUrl(it.url) === "#" ? `<span class="key" title="${no
   : `<a class="key" href="${esc(safeUrl(it.url))}" target="_blank" rel="noopener noreferrer" data-act="seen-link">${esc(it.key)}</a>`;
 const statusPill = (it) => `<span class="status ${it.state}">${esc(it.status || STATE[it.state])}</span>`;
 
+// PRs name their Jira issues in the title, branch or description; link both ways.
+function jiraLink(key) {
+  const found = data.items.find(i => i.source === "jira" && i.key === key);
+  const url = found ? safeUrl(found.url) : data.links?.jira ? safeUrl(`${data.links.jira}/browse/${encodeURIComponent(key)}`) : "#";
+  const title = found ? `${key}: ${found.title}` : `${key} in Jira`;
+  return url === "#" ? `<span class="tag">${esc(key)}</span>`
+    : `<a class="tag" href="${esc(url)}" target="_blank" rel="noopener noreferrer" title="${esc(title)}">${esc(key)}${found ? ` · ${esc(found.status || STATE[found.state])}` : ""} ↗</a>`;
+}
+function linkedHtml(it) {
+  if (isPR(it)) {
+    // Titles hold look-alikes such as UTF-8; once Jira items are loaded, keep keys of their projects.
+    const known = new Set(data.items.filter(i => i.source === "jira").map(i => i.key.split("-")[0]));
+    const keys = (it.jira_keys || []).filter(k => !known.size || known.has(k.split("-")[0]));
+    return keys.length ? `<div class="tags"><span class="lk">Jira</span>${keys.map(jiraLink).join("")}</div>` : "";
+  }
+  if (it.source !== "jira") return "";
+  const prs = data.items.filter(p => isPR(p) && (p.jira_keys || []).includes(it.key));
+  return prs.length ? `<div class="tags"><span class="lk">PRs</span>${prs.map(p => `<button class="tag" data-jump="${esc(p.id)}" data-view="prs" title="${esc(p.title)}">${esc(p.key)} · ${esc(p.status)}</button>`).join("")}</div>` : "";
+}
 function detailHtml(it) {
   const cur = bucketOf(it), manual = !!local.bucket[it.id];
   const moves = COLS.filter(c => c.id !== cur).map(c => `<button class="btn sm" data-act="move" data-to="${c.id}">→ ${c.title}</button>`).join("")
@@ -4002,7 +4114,7 @@ function detailHtml(it) {
       <span>created ${ago(it.created)}</span>${it.priority ? `<span>Priority <b>${esc(it.priority)}</b></span>` : ""}<span>${esc(it.type)}</span>
       ${it.branch ? `<span>Branch <b>${esc(it.branch)}</b></span>` : ""}<span>Project <b>${esc(it.project)}</b></span></div>
     ${(it.labels || []).length ? `<div class="tags">${it.labels.map(l => `<span class="tag">${esc(l)}</span>`).join("")}</div>` : ""}
-    <div class="tags">${relTags(it)}</div>
+    <div class="tags">${relTags(it)}</div>${linkedHtml(it)}
     <textarea data-act="note" placeholder="Private note (stays on this machine) …">${esc(local.notes[it.id] || "")}</textarea>
     <div class="actions">${safeUrl(it.url) === "#" ? `<span class="btn sm off" aria-disabled="true" title="${noLink()}">Open in ${SRC[it.source]} ↗</span>`
       : `<a class="btn sm on" href="${esc(safeUrl(it.url))}" target="_blank" rel="noopener noreferrer" data-act="seen-link">Open in ${SRC[it.source]} ↗</a>`}
@@ -4129,7 +4241,10 @@ const NEXT_GROUPS = [
   { id: "mention", title: "Someone is waiting for your reply" },
   { id: "doing", title: "In progress" },
   { id: "assigned", title: "Assigned to you" },
+  { id: "testing", title: "In test or review", hint: "Your issues someone is checking now" },
 ];
+// Issues in a test or review column are mostly with someone else, so they go last.
+const IN_TEST = /test|qa\b|review|verif|abnahme|prüf/i;
 function nextGroup(it) {
   const r = it.relations, due = dueInfo(it);
   if (local.pins.includes(it.id)) return "focus";
@@ -4138,6 +4253,7 @@ function nextGroup(it) {
   if (due?.urgent && bucketOf(it) === "todo") return "due";
   if (r.includes("mentioned")) return "mention";
   if (bucketOf(it) !== "todo") return null;
+  if (!isPR(it) && IN_TEST.test(it.status || "")) return "testing";
   return it.state === "in_progress" ? "doing" : "assigned";
 }
 function nextReason(it, group) {
@@ -4158,7 +4274,7 @@ function renderOverview() {
   for (const it of open) { const g = nextGroup(it); if (g) groups[g].push(it); }
   groups.review.sort((a, b) => ts(a.created) - ts(b.created));            // longest waiting first
   groups.due.sort((a, b) => (a.due || "").localeCompare(b.due || ""));
-  for (const g of ["focus", "changes", "mention", "doing", "assigned"]) groups[g] = sorted(groups[g], "updated");
+  for (const g of ["focus", "changes", "mention", "doing", "assigned", "testing"]) groups[g] = sorted(groups[g], "updated");
   const queue = NEXT_GROUPS.flatMap(g => groups[g.id]);
 
   const changed = sorted(open.filter(listedAsChanged), "updated");
@@ -4322,7 +4438,11 @@ function render() {
   });
   document.querySelectorAll("#states button").forEach(x => { x.classList.toggle("on", ui.states.includes(x.dataset.v)); x.setAttribute("aria-pressed", String(ui.states.includes(x.dataset.v))); });
   $("#group").value = ui.group; $("#sort").value = ui.sort;
+  // Columns scroll on their own and are rebuilt below; keep their positions across the rebuild.
+  const scrollKey = (el) => ui.view + ":" + (el.dataset.col || "card");
+  const scrolls = new Map([...document.querySelectorAll("#list .col, #list > .card")].map(el => [scrollKey(el), el.scrollTop]));
   ui.view === "dash" ? renderOverview() : ui.view === "issues" ? renderDash() : ui.view === "prs" ? renderPRs() : renderList();
+  document.querySelectorAll("#list .col, #list > .card").forEach(el => { const top = scrolls.get(scrollKey(el)); if (top) el.scrollTop = top; });
   renderSide(); renderMeta();
   setCur(cur, false, rowHadFocus);
 }
@@ -4581,6 +4701,7 @@ document.addEventListener("click", e => {
   }
   if (el.dataset.jump) {
     const id = el.dataset.jump; ui.open = id; ui.q = ""; $("#q").value = ""; ui.source = "all";
+    if (el.dataset.view) { ui.view = el.dataset.view; saveUi(); }
     if (ui.view === "list") { ui.rels = []; ui.states = []; }
     const it = data.items.find(i => i.id === id);
     if (it && (ui.view === "dash" || ui.view === "issues") && isHidden(it)) ui.showHidden[boardCol(it)] = true;

@@ -432,6 +432,26 @@ class GitLabTests(RoutesCase):
         self.assertEqual((item["status"], item["state"]), ("In review", "in_progress"))
         self.assertEqual((item["priority"], item["type"]), ("high", "Test case"))
 
+    def test_board_lists_set_status(self) -> None:
+        def board(*names: str) -> dict[str, Any]:
+            lists = [{"position": i, "label": {"name": n}} for i, n in enumerate(names)]
+            return {"lists": lists}
+
+        Routes.routes = {
+            ("GET", self.API + "/projects/platform%2Finfra/boards"): ok([board("Doing", "Test")]),
+            ("GET", self.API + "/groups/platform/boards"): status(403),
+        }
+        source = self.source(wl.GitLabSource, "gitlab")
+        both = source.normalize(gitlab_item(1, 1, labels=["test", "Doing", "bug"]), "issue")
+        plain = source.normalize(gitlab_item(2, 2, labels=["bug"]), "issue")
+        scoped = source.normalize(gitlab_item(3, 3, labels=["workflow::Ready", "Test"]), "issue")
+        warnings: list[str] = []
+        source._apply_board_lists([both, plain, scoped], warnings)
+        self.assertEqual((both["status"], both["state"]), ("Test", "in_progress"))
+        self.assertEqual((plain["status"], plain["state"]), ("Open", "todo"))
+        self.assertEqual(scoped["status"], "Ready")
+        self.assertEqual(warnings, [])
+
     def test_normalize_states(self) -> None:
         source = self.source(wl.GitLabSource, "gitlab")
         merged = source.normalize(gitlab_item(1, 1, "mr", state="merged"), "mr")
@@ -562,6 +582,19 @@ class BitbucketTests(RoutesCase):
             {}, **{"X-AUSERNAME": "anonymous"}
         )
         self.assertEqual(source._whoami(), "fallback")
+
+    def test_jira_keys_from_title_branch_and_links(self) -> None:
+        source = self.source(wl.BitbucketSource, "bitbucket")
+        pr = {
+            "id": 5,
+            "title": "PLAT-12: fix export (UTF-8)",
+            "fromRef": {"displayId": "feature/PLAT-12-export"},
+            "description": "Needs UTF-8. See https://jira.example/browse/OPS-7 and PLAT-99.",
+        }
+        item = source.normalize(pr)
+        self.assertEqual(item["jira_keys"], ["PLAT-12", "UTF-8", "OPS-7"])
+        coerced = wl.coerce_item({**item, "jira_keys": ["OPS-7", "<b>", 3]})
+        self.assertEqual(coerced["jira_keys"], ["OPS-7"])
 
     def test_all_dashboard_queries_failing_is_an_error(self) -> None:
         source = self.source(wl.BitbucketSource, "bitbucket")
