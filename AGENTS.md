@@ -70,7 +70,25 @@ The live demo on GitHub Pages is recorded from the real code: `tools/ui.py demo`
 - **Remote data is untrusted.** Pass it through `sanitize`, validate keys/paths with the `RE_*` patterns before building URLs, and keep links on the configured instance (`_own_url`, `_web_url`).
 - **Files** holding personal data are written with `write_private` (atomic, mode 0600).
 - **Relations** an item can have are listed in `RELATIONS`; adding one means updating the UI and `prune_relations` semantics.
-- **Versioning:** bump `VERSION` in `onmyplate.py` and `version` in `pyproject.toml` together, and add a `CHANGELOG.md` entry (a test checks they agree). Add unreleased changes under *Unreleased*.
+- **Changelog:** every user-visible change adds an entry under *Unreleased* in `CHANGELOG.md`, in the same commit.
+
+## Versions and releases
+
+[Semantic Versioning](https://semver.org/). Until 1.0, the minor number takes the place of the major one:
+
+| Since the last release | Bump | Example |
+|---|---|---|
+| Breaking change (config option, file format, CLI flag removed or changed) | minor, plus `BREAKING CHANGE:` in the commit body | 0.2.3 → 0.3.0 |
+| Any `feat` (an *Added* or *Changed* entry in the changelog) | minor | 0.2.3 → 0.3.0 |
+| Only `fix`, `perf`, `docs` and the like | patch | 0.2.3 → 0.2.4 |
+
+Pick the bump from the *Unreleased* section, not from the last release: one *Added* entry makes it a minor release. Versions 0.1.2 and 0.1.5 shipped features as patch releases; that was a mistake, not a precedent.
+
+To release:
+
+1. One `chore(release): x.y.z` commit on `main` that changes only three things: `VERSION` in `onmyplate.py`, `version` in `pyproject.toml`, and `CHANGELOG.md` (rename *Unreleased* to `## [x.y.z] – YYYY-MM-DD`, start a new empty *Unreleased*, update the compare links at the bottom). A test checks that the versions agree.
+2. Push, then start the Release workflow by hand (`gh workflow run release.yml --ref main`). It refuses an existing tag or a missing changelog section, runs the tests, tags `vx.y.z` and publishes the GitHub release that `--update` installs from.
+3. A published release is final. Never move or delete a tag; fix mistakes with a new patch release.
 
 ## Testing tips
 

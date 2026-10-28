@@ -60,6 +60,10 @@ Examples: `fix(gitlab): count work items as issues`, `feat(ui): undo for deleted
 - Pull requests are squash-merged, so the **pull request title** becomes the commit message.
 - No tokens, internal URLs or ticket contents in commits.
 
+## Versions
+
+We follow [Semantic Versioning](https://semver.org/). Until 1.0, a new feature or a breaking change raises the minor version (0.2.0 → 0.3.0) and a release with only fixes raises the patch version (0.2.0 → 0.2.1). Maintainers cut releases; AGENTS.md describes the steps.
+
 ## Style
 
 - **Python:** ruff with the rule set in `pyproject.toml`, formatted with `ruff format` (line length 100), with type hints.
