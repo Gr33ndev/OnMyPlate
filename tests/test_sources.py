@@ -239,6 +239,65 @@ class JiraTests(RoutesCase):
         self.assertNotIn("statusCategory", jql)
         self.assertTrue(Routes.log[0]["auth"].startswith("Bearer "))
 
+    def test_request_participants_and_mentions(self) -> None:
+        def comment(name: str, created: str, body: str = "ok") -> dict[str, Any]:
+            return {"author": {"name": name}, "created": created, "body": body}
+
+        mention = "please check, [~sam]"
+        answered = [
+            comment("anna", "2026-10-01T10:00:00.000+0200", mention),
+            comment("sam", "2026-10-02T10:00:00.000+0200"),
+        ]
+        asked_again = [*answered, comment("anna", "2026-10-03T10:00:00.000+0200", mention)]
+
+        def search(_: dict[str, str], body: dict[str, Any]) -> Reply:
+            jql = body["jql"]
+            if "Request participants" in jql:
+                return ok({"issues": [jira_issue("SD-1")], "total": 1})
+            if "description ~ currentUser()" in jql:
+                issues = [
+                    jira_issue("PLAT-1"),
+                    jira_issue("PLAT-2", answered),
+                    jira_issue("PLAT-3", asked_again),
+                ]
+                return ok({"issues": issues, "total": 3})
+            return ok({"issues": [], "total": 0})
+
+        Routes.routes = {
+            ("GET", "/jira/rest/api/2/myself"): ok({"name": "sam", "key": "sam"}),
+            ("POST", "/jira/rest/api/2/search"): search,
+        }
+        source = self.source(wl.JiraSource, "jira", type="server", participation_jql="x = y")
+        items, warnings = source.fetch()
+        self.assertEqual(warnings, [])
+        self.assertEqual(
+            self.relations(items),
+            {
+                "jira:SD-1": {"watcher"},
+                "jira:PLAT-1": {"mentioned"},
+                "jira:PLAT-2": {"mentioned_done", "commented"},
+                "jira:PLAT-3": {"mentioned", "commented"},
+            },
+        )
+
+    def test_unsupported_optional_queries_are_skipped_quietly(self) -> None:
+        def search(_: dict[str, str], body: dict[str, Any]) -> Reply:
+            jql = body["jql"]
+            if "Request participants" in jql or "description ~" in jql:
+                return status(400)
+            return ok({"issues": [jira_issue("PLAT-1")], "total": 1})
+
+        Routes.routes = {
+            ("GET", "/jira/rest/api/2/myself"): ok({"name": "sam"}),
+            ("POST", "/jira/rest/api/2/search"): search,
+        }
+        source = self.source(wl.JiraSource, "jira", type="server", participation_jql="x = y")
+        items, warnings = source.fetch()
+        self.assertEqual(warnings, [])
+        self.assertEqual(
+            self.relations(items), {"jira:PLAT-1": {"assignee", "reporter", "watcher"}}
+        )
+
     def test_cloud_type_is_detected_and_cloud_id_checked(self) -> None:
         cfg = wl.merge_config(
             wl.DEFAULT_CONFIG,

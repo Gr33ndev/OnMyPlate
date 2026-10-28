@@ -141,13 +141,13 @@ Without a keychain, a token in the config file is refused instead of being store
 
 | | Jira | GitLab | Bitbucket |
 |---|---|---|---|
-| Assigned / created / watching | JQL `assignee`, `reporter`, `watcher` | `scope=assigned_to_me`, `created_by_me` (GitLab has no API to list items you are subscribed to) | n/a |
+| Assigned / created / watching | JQL `assignee`, `reporter`, `watcher`, `"Request participants"` (Service Management) | `scope=assigned_to_me`, `created_by_me` (GitLab has no API to list items you are subscribed to) | n/a |
 | Commented | Data Center: built-in activity stream. Cloud: `updatedBy()` | Events API | n/a |
-| Mentioned | n/a | GitLab to-dos (`mentioned`, `directly_addressed`) | Scans comments of recent open PRs for `@you` |
+| Mentioned | JQL `description ~ currentUser()`, `comment ~ currentUser()` | GitLab to-dos (`mentioned`, `directly_addressed`) | Scans comments of recent open PRs for `@you` |
 | Reviews / your PRs | n/a | `reviewer_id`, `created_by_me`, `assigned_to_me` | Dashboard API, roles `REVIEWER`, `AUTHOR`, `PARTICIPANT` |
 | Team repos | n/a | `watch_projects` (project or group) | `watch_repos` (`PROJ` or `PROJ/repo`) |
 
-On Bitbucket a mention counts as answered once you comment after it, on GitLab once its to-do is done. GitLab work items (tasks, epics, objectives and the like, GitLab 17+) count as issues. Answered mentions move from "Mentioned" to the watchlist.
+On Jira and Bitbucket a mention counts as answered once you comment after it, on GitLab once its to-do is done. GitLab work items (tasks, epics, objectives and the like, GitLab 17+) count as issues. Answered mentions move from "Mentioned" to the watchlist.
 
 ## Configuration
 

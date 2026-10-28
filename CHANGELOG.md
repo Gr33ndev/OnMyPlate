@@ -4,6 +4,9 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Added
+- Jira also finds issues where you are a request participant (Jira Service Management) or mentioned in the description or a comment. A mention counts as answered once you comment after it. Instances that do not support these searches skip them quietly.
+
 ## [0.1.5] – 2026-10-27
 
 ### Added

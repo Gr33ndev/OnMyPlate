@@ -1251,6 +1251,30 @@ class JiraSource(Source):
             return True, False
         return False, (block.get("total") or 0) > len(comments)
 
+    def _mentions_me(self, body: Any) -> bool:
+        text = body if isinstance(body, str) else json.dumps(body)
+        if self.me.get("accountId") and self.me["accountId"] in text:
+            return True
+        return any(self.me.get(k) and f"[~{self.me[k]}]" in text for k in ("key", "name"))
+
+    def _mention_answered(self, raw: dict[str, Any]) -> bool:
+        """True if my latest comment is newer than every comment mentioning me.
+
+        A mention in the description counts as answered by any comment of mine.
+        """
+        mine: list[datetime] = []
+        mentions: list[datetime] = []
+        for comment in ((raw.get("fields") or {}).get("comment") or {}).get("comments") or []:
+            try:
+                created = datetime.fromisoformat(to_iso(comment.get("created")) or "")
+            except ValueError:
+                continue
+            if self._is_me(comment.get("author")):
+                mine.append(created)
+            elif self._mentions_me(comment.get("body")):
+                mentions.append(created)
+        return bool(mine) and (not mentions or max(mine) > max(mentions))
+
     def _issue_path(self, key: str) -> str:
         return f"/issue/{urllib.parse.quote(key, safe='')}"
 
@@ -1271,10 +1295,17 @@ class JiraSource(Source):
         if participation is None and self.cloud:
             participation = f'issue in updatedBy(currentUser(), "-{days}d")'
 
+        request_participant = '"Request participants" = currentUser()'
+        mentioned = "description ~ currentUser() OR comment ~ currentUser()"
+        # Instances without Jira Service Management reject the request participants field,
+        # and Jira Cloud may reject currentUser() in text searches. Both answer HTTP 400.
+        optional = {request_participant, mentioned}
         queries = [
             ("assignee", "assignee = currentUser()"),
             ("reporter", "reporter = currentUser()"),
             ("watcher", "watcher = currentUser()"),
+            ("watcher", request_participant),
+            ("mentioned", mentioned),
         ]
         if participation:
             queries.append(("participant", participation))
@@ -1288,12 +1319,14 @@ class JiraSource(Source):
                     None,
                 )
             except SourceError as exc:
+                if jql in optional and "HTTP 400" in str(exc):
+                    return relation, [], ""
                 return relation, [], f"Jira query '{relation}' failed: {exc}"
 
-        with ThreadPoolExecutor(4) as pool:
+        with ThreadPoolExecutor(len(queries)) as pool:
             results = list(pool.map(run, queries))
-        if all(error for _, _, error in results):
-            raise SourceError(results[0][2])
+        if all(error is not None for _, _, error in results):
+            raise SourceError(next(error for _, _, error in results if error))
 
         items: dict[str, Item] = {}
         recheck: list[str] = []
@@ -1302,7 +1335,8 @@ class JiraSource(Source):
                 warnings.append(error)
             for raw in raws:
                 item = items.setdefault(raw["key"], self.normalize(raw))
-                item["relations"].add(relation)
+                answered = relation == "mentioned" and self._mention_answered(raw)
+                item["relations"].add("mentioned_done" if answered else relation)
                 commented, truncated = self._comment_state(raw)
                 if commented:
                     item["relations"].add("commented")
