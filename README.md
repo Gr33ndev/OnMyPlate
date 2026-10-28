@@ -40,7 +40,7 @@ It is built for environments where data protection matters:
   - Optionally all open PRs in your team's repos.
 - **Four views:**
   - **Dashboard:** the overview described above.
-  - **Issues:** a to do / waiting / watchlist board.
+  - **Issues:** a to do / waiting / watchlist board, plus the open issues of boards you follow.
   - **Pull Requests:** your reviews, your PRs, mentions and team repos.
   - **List:** filter, group and sort.
 - **Personal tasks** stored in a plain Markdown checklist (compatible with the Obsidian Tasks format). You can turn any ticket into a task, and edit the file by hand.
@@ -109,7 +109,7 @@ Create tokens with **read access only**. On My Plate sees what your account sees
 | Source | Token | Scope / permissions |
 |---|---|---|
 | Jira Data Center / Server (8.14+) | Personal access token: avatar → Profile → Personal Access Tokens | Same permissions as your account (PATs have no scopes) |
-| Jira Cloud | API token with scopes, plus your e-mail in `jira.email` | `read:jira-work`, `read:jira-user` |
+| Jira Cloud | API token with scopes, plus your e-mail in `jira.email` | `read:jira-work`, `read:jira-user`; for `watch_boards` possibly also `read:board-scope:jira-software` |
 | GitLab | Personal access token | `read_api` |
 | Bitbucket Data Center | **Personal** HTTP access token: Profile → Manage account → HTTP access tokens. Project or repository tokens act as their own bot user and cannot see your dashboard. | Project read, Repository read |
 
@@ -146,6 +146,7 @@ Without a keychain, a token in the config file is refused instead of being store
 | Mentioned | JQL `description ~ currentUser()`, `comment ~ currentUser()` | GitLab to-dos (`mentioned`, `directly_addressed`) | Scans comments of recent open PRs for `@you` |
 | Reviews / your PRs | n/a | `reviewer_id`, `created_by_me`, `assigned_to_me` | Dashboard API, roles `REVIEWER`, `AUTHOR`, `PARTICIPANT` |
 | Team repos | n/a | `watch_projects` (project or group) | `watch_repos` (`PROJ` or `PROJ/repo`) |
+| Boards you follow | `watch_boards`: open issues of the board's filter (board and backlog) | `watch_boards`: open issues within the board's labels, milestone and assignee (board and backlog) | n/a |
 
 On Jira and Bitbucket a mention counts as answered once you comment after it, on GitLab once its to-do is done. GitLab work items (tasks, epics, objectives and the like, GitLab 17+) count as issues. Answered mentions move from "Mentioned" to the watchlist.
 
@@ -165,6 +166,7 @@ On Jira and Bitbucket a mention counts as answered once you comment after it, on
 | `jira.scope_jql` | `""` | Extra JQL ANDed to every query, e.g. `project in (PLAT, OPS)` |
 | `jira.participation_jql` | `null` | Custom JQL for "involved", e.g. a ScriptRunner `issueFunction in commented("by currentUser()")` |
 | `jira.include_done`, `gitlab.include_closed`, `bitbucket.include_closed` | `false` | Also show finished work |
+| `jira.watch_boards`, `gitlab.watch_boards` | `[]` | Board links copied from the browser, e.g. `https://jira.example/secure/RapidBoard.jspa?rapidView=42` or `https://gitlab.example/group/project/-/boards/7`. Their open issues appear in the Boards column of the Issues tab and at the end of Next up |
 | `gitlab.watch_projects` | `[]` | Projects or groups whose open MRs appear under Team repos |
 | `bitbucket.watch_repos` | `[]` | `PROJ` or `PROJ/repo` whose open PRs appear under Team repos |
 | `bitbucket.username` | `""` | Only needed if your server does not send `X-AUSERNAME` |

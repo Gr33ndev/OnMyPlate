@@ -298,6 +298,46 @@ class JiraTests(RoutesCase):
             self.relations(items), {"jira:PLAT-1": {"assignee", "reporter", "watcher"}}
         )
 
+    def test_followed_boards_add_their_filter(self) -> None:
+        def search(_: dict[str, str], body: dict[str, Any]) -> Reply:
+            jql = body["jql"]
+            if jql.startswith("(assignee"):
+                return ok({"issues": [jira_issue("PLAT-1")], "total": 1})
+            if jql.startswith("(filter = 10100)"):
+                return ok({"issues": [jira_issue("PLAT-1"), jira_issue("PLAT-5")], "total": 2})
+            return ok({"issues": [], "total": 0})
+
+        agile = "/jira/rest/agile/1.0/board"
+        Routes.routes = {
+            ("GET", "/jira/rest/api/2/myself"): ok({"name": "sam"}),
+            ("POST", "/jira/rest/api/2/search"): search,
+            ("GET", agile + "/42/configuration"): ok({"filter": {"id": "10100"}}),
+            ("GET", agile + "/43/configuration"): status(403),
+        }
+        jira = f"{self.base}/jira"
+        source = self.source(
+            wl.JiraSource,
+            "jira",
+            type="server",
+            participation_jql="x = y",
+            watch_boards=[
+                f"{jira}/secure/RapidBoard.jspa?rapidView=42&view=planning",
+                f"{jira}/secure/RapidBoard.jspa?rapidView=43",
+                "https://jira.elsewhere.example/secure/RapidBoard.jspa?rapidView=42",
+            ],
+        )
+        items, warnings = source.fetch()
+        self.assertEqual(
+            self.relations(items), {"jira:PLAT-1": {"assignee"}, "jira:PLAT-5": {"board"}}
+        )
+        self.assertEqual(len(warnings), 2)
+        self.assertIn("cannot read board 43", warnings[0])
+        self.assertIn("ignoring watch_boards entry", warnings[1])
+        self.assertEqual(
+            source._board_id(f"{jira}/jira/software/projects/PLAT/boards/7/backlog"), "7"
+        )
+        self.assertIsNone(source._board_id(f"{jira}/secure/RapidBoard.jspa?rapidView=../1"))
+
     def test_cloud_type_is_detected_and_cloud_id_checked(self) -> None:
         cfg = wl.merge_config(
             wl.DEFAULT_CONFIG,
@@ -440,6 +480,40 @@ class GitLabTests(RoutesCase):
         )
         self.assertTrue(draft["url"].startswith(f"{self.base}/gitlab/platform/infra/-/"))
         self.assertTrue(all(entry["auth"] == "secret" for entry in Routes.log))
+
+    def test_followed_boards_add_open_issues_in_their_scope(self) -> None:
+        Routes.routes = {
+            ("GET", self.API + "/projects/platform%2Finfra/boards/7"): ok(
+                {"id": 7, "labels": [{"name": "team-a"}], "milestone": {"title": "Upcoming"}}
+            ),
+            ("GET", self.API + "/projects/platform%2Finfra/issues"): ok([gitlab_item(300, 3)]),
+            ("GET", self.API + "/groups/platform/boards"): ok([{"id": 1, "labels": []}]),
+            ("GET", self.API + "/groups/platform/issues"): ok([gitlab_item(301, 4)]),
+        }
+        gitlab = f"{self.base}/gitlab"
+        source = self.source(
+            wl.GitLabSource,
+            "gitlab",
+            watch_boards=[
+                f"{gitlab}/platform/infra/-/boards/7",
+                f"{gitlab}/groups/platform/-/boards",
+                "https://gitlab.elsewhere.example/platform/infra/-/boards/7",
+            ],
+        )
+        added: list[tuple[Any, str, str]] = []
+        warnings: list[str] = []
+        source._add_board_issues(
+            lambda raw, kind, rel: added.append((raw["id"], kind, rel)), warnings
+        )
+        self.assertEqual(sorted(added), [(300, "issue", "board"), (301, "issue", "board")])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("ignoring watch_boards entry", warnings[0])
+        query = next(e["query"] for e in Routes.log if e["path"].endswith("infra/issues"))
+        self.assertEqual(
+            (query["state"], query["labels"], query["milestone"]), ("opened", "team-a", "Upcoming")
+        )
+        group_query = next(e["query"] for e in Routes.log if e["path"].endswith("form/issues"))
+        self.assertNotIn("labels", group_query)
 
     def test_work_items_count_as_issues(self) -> None:
         task = gitlab_item(20, 4, issue_type="task", type="TASK")

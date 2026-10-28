@@ -16,7 +16,8 @@
     "comment_lookback_days": 90,
     "participation_jql": null,
     "scope_jql": "",
-    "max_issues_per_query": 500
+    "max_issues_per_query": 500,
+    "watch_boards": []
   },
   "gitlab": {
     "enabled": true,
@@ -28,6 +29,7 @@
     "max_items_per_query": 500,
     "max_comment_lookups": 150,
     "watch_projects": [],
+    "watch_boards": [],
     "mention_lookback_days": 30
   },
   "bitbucket": {

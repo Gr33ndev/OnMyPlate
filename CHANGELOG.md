@@ -4,6 +4,9 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Added
+- Follow Jira and GitLab boards with `jira.watch_boards` and `gitlab.watch_boards`: paste the board links from the browser. Their open issues, board and backlog, appear in a new Boards column on the Issues tab and as "From your boards" at the end of Next up, so you can pick your next task there. Issues you are already involved in stay where they were.
+
 ## [0.2.1] – 2026-10-28
 
 ### Fixed

@@ -313,7 +313,7 @@ def redact_url(url: str) -> str:
 
 def prune_relations(relations: set[str]) -> None:
     """Drop generic relations when a more specific one describes the item."""
-    generic = {"participant", "team"}
+    generic = {"participant", "team", "board"}
     if relations - generic:
         relations.difference_update(generic)
     elif len(relations) > 1:
@@ -574,6 +574,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "participation_jql": None,
         "scope_jql": "",
         "max_issues_per_query": 500,
+        "watch_boards": [],
     },
     "gitlab": {
         "enabled": True,
@@ -585,6 +586,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_items_per_query": 500,
         "max_comment_lookups": 150,
         "watch_projects": [],
+        "watch_boards": [],
         "mention_lookback_days": 30,
     },
     "bitbucket": {
@@ -634,6 +636,10 @@ Or let a password manager provide it: "token_command": "op read op://Private/Git
 Team repos (open PRs/MRs, plus mention search on Bitbucket), optional:
   gitlab.watch_projects   – e.g. ["platform/infra-live", "platform"]  (project or group)
   bitbucket.watch_repos   – e.g. ["PLAT/ci-pipelines", "PLAT"]      (repo or project)
+
+Boards whose open issues (board and backlog) you want to pick work from, optional:
+  jira.watch_boards       – board links, e.g. [".../secure/RapidBoard.jspa?rapidView=42"]
+  gitlab.watch_boards     – board links, e.g. [".../platform/infra-live/-/boards/7"]
 
 On My Plate only reads. Write requests are blocked in the code.
 
@@ -1072,6 +1078,7 @@ class Source:
 JIRA_STATE = {"new": "todo", "indeterminate": "in_progress", "done": "done"}
 RE_CLOUD_ID = re.compile(r"[0-9a-fA-F-]{20,64}")
 RE_JIRA_KEY = re.compile(r"[A-Z][A-Z0-9_]*-\d+")
+RE_JIRA_BOARD_PATH = re.compile(r"/boards/(\d+)(?:/|$)")
 RE_JIRA_KEY_IN_TEXT = re.compile(r"(?<![\w-])[A-Z][A-Z0-9_]*-\d+(?![A-Za-z0-9])")
 RE_JIRA_BROWSE_LINK = re.compile(r"/browse/([A-Z][A-Z0-9_]*-\d+)(?![A-Za-z0-9])")
 
@@ -1275,6 +1282,45 @@ class JiraSource(Source):
                 mentions.append(created)
         return bool(mine) and (not mentions or max(mine) > max(mentions))
 
+    def _board_id(self, entry: object) -> str | None:
+        """Read the board number from a board link on this Jira, e.g. ?rapidView=42."""
+        if not isinstance(entry, str) or not entry.strip().startswith(self.base + "/"):
+            return None
+        parts = urllib.parse.urlsplit(entry.strip())
+        board = urllib.parse.parse_qs(parts.query).get("rapidView", [""])[0]
+        match = RE_JIRA_BOARD_PATH.search(parts.path)
+        board = board or (match.group(1) if match else "")
+        return board if board.isdigit() else None
+
+    def _board_filters(self, warnings: list[str]) -> list[str]:
+        """Each board shows the issues of a saved filter; its backlog is part of it."""
+        agile = re.sub(r"/rest/api/\d+$", "/rest/agile/1.0", self.api or "")
+        filters: list[str] = []
+        for entry in self.cfg.get("watch_boards") or []:
+            board = self._board_id(entry)
+            if not board:
+                warnings.append(
+                    f"Jira: ignoring watch_boards entry '{sanitize(entry, 80)}'. "
+                    f"Copy the link of a board on {self.base} from the browser."
+                )
+                continue
+            try:
+                config = self._call("GET", f"{agile}/board/{board}/configuration") or {}
+            except SourceError as exc:
+                hint = (
+                    " Scoped API tokens may also need the read:board-scope:jira-software scope."
+                    if self.scoped
+                    else ""
+                )
+                warnings.append(f"Jira: cannot read board {board} ({exc}).{hint}")
+                continue
+            filter_id = str((config.get("filter") or {}).get("id") or "")
+            if filter_id.isdigit():
+                filters.append(filter_id)
+            else:
+                warnings.append(f"Jira: board {board} has no filter that could be read.")
+        return filters
+
     def _issue_path(self, key: str) -> str:
         return f"/issue/{urllib.parse.quote(key, safe='')}"
 
@@ -1309,6 +1355,7 @@ class JiraSource(Source):
         ]
         if participation:
             queries.append(("participant", participation))
+        queries += [("board", f"filter = {fid}") for fid in self._board_filters(warnings)]
 
         def run(query: tuple[str, str]) -> tuple[str, list[dict[str, Any]], str | None]:
             relation, jql = query
@@ -1323,7 +1370,7 @@ class JiraSource(Source):
                     return relation, [], ""
                 return relation, [], f"Jira query '{relation}' failed: {exc}"
 
-        with ThreadPoolExecutor(len(queries)) as pool:
+        with ThreadPoolExecutor(min(len(queries), 8)) as pool:
             results = list(pool.map(run, queries))
         if all(error is not None for _, _, error in results):
             raise SourceError(next(error for _, _, error in results if error))
@@ -1463,6 +1510,7 @@ GITLAB_TODO_RELATIONS = {
     "assigned": "assignee",
 }
 RE_GITLAB_PATH = re.compile(r"[\w.\-]+(/[\w.\-]+)*")
+RE_GITLAB_BOARD = re.compile(r"(groups/)?([\w.\-]+(?:/[\w.\-]+)*)/-/boards(?:/(\d+))?/?")
 # Workflow or board list names that mean someone is working on the issue.
 IN_PROGRESS_WORDS = re.compile(r"doing|progress|review|arbeit|test|qa\b|verif", re.IGNORECASE)
 
@@ -1633,6 +1681,7 @@ class GitLabSource(Source):
 
         self._add_from_todos(items, add, warnings)
         self._add_team_merge_requests(add, warnings)
+        self._add_board_issues(add, warnings)
         self._add_commented(by_ref, add, warnings)
         self._apply_board_lists(items.values(), warnings)
 
@@ -1705,6 +1754,68 @@ class GitLabSource(Source):
                 for raw in merge_reqs:
                     if isinstance(raw, dict):
                         add(raw, "mr", "team")
+
+    def _parse_board(self, entry: object) -> tuple[str, str, str] | None:
+        """Return (projects|groups, path, board id or "") for a board link on this GitLab."""
+        if not isinstance(entry, str) or not entry.strip().startswith(self.base + "/"):
+            return None
+        path = urllib.parse.urlsplit(entry.strip()[len(self.base) :]).path.strip("/")
+        match = RE_GITLAB_BOARD.fullmatch(path)
+        if not match:
+            return None
+        scope = "groups" if match.group(1) else "projects"
+        return scope, match.group(2), match.group(3) or ""
+
+    def _add_board_issues(self, add: Callable[..., None], warnings: list[str]) -> None:
+        """Open issues of followed boards: everything matching the board's scope.
+
+        The open list of a board is its backlog, so the board and its backlog are all
+        open issues within the board's labels, milestone and assignee. Weight and
+        iteration scopes are not applied.
+        """
+        boards = []
+        for entry in self.cfg.get("watch_boards") or []:
+            parsed = self._parse_board(entry)
+            if parsed:
+                boards.append(parsed)
+            else:
+                warnings.append(
+                    f"GitLab: ignoring watch_boards entry '{sanitize(entry, 80)}'. "
+                    f"Copy the link of a board on {self.base} from the browser."
+                )
+
+        def issues(board: tuple[str, str, str]) -> tuple[str, list[Any], SourceError | None]:
+            scope, path, board_id = board
+            base = f"/{scope}/{urllib.parse.quote(path, safe='')}"
+            try:
+                if board_id:
+                    found, _ = self._get(f"{base}/boards/{board_id}")
+                else:
+                    # A link without a number opens the first board.
+                    found = next(iter(self.paged(f"{base}/boards", {}, limit=1)), None)
+                if not isinstance(found, dict):
+                    return path, [], SourceError("no board found")
+                params: dict[str, Any] = {"state": "opened", "scope": "all"}
+                labels = [
+                    lbl.get("name") for lbl in found.get("labels") or [] if isinstance(lbl, dict)
+                ]
+                if labels:
+                    params["labels"] = ",".join(name for name in labels if name)
+                if isinstance(found.get("milestone"), dict) and found["milestone"].get("title"):
+                    params["milestone"] = found["milestone"]["title"]
+                if isinstance(found.get("assignee"), dict) and found["assignee"].get("id"):
+                    params["assignee_id"] = found["assignee"]["id"]
+                return path, self.paged(f"{base}/issues", params), None
+            except SourceError as exc:
+                return path, [], exc
+
+        with ThreadPoolExecutor(4) as pool:
+            for path, raws, error in pool.map(issues, boards):
+                if error:
+                    warnings.append(f"GitLab: cannot read the board of {path} ({error}).")
+                for raw in raws:
+                    if isinstance(raw, dict):
+                        add(raw, "issue", "board")
 
     def _add_commented(
         self,
@@ -2171,7 +2282,7 @@ def demo_items(sources: tuple[str, ...] = SOURCE_NAMES) -> list[Item]:
             item["relations"] = (set(item["relations"]) - {"reviewer"}) | {"assignee"}
     if "jira" not in sources:
         _convert_jira_demo_items(items)
-    items += _demo_pull_requests()
+    items += _demo_pull_requests() + _demo_board_items()
     # Some PRs name a Jira issue, as teams do in the title or description.
     jira = [item["key"] for item in items if item["source"] == "jira"]
     prs = [item for item in items if item["type"] in ("PR", "MR")]
@@ -2184,6 +2295,50 @@ def demo_items(sources: tuple[str, ...] = SOURCE_NAMES) -> list[Item]:
             item["branch"] = f"feature/{slug} → main"
         _make_demo_people_consistent(item)
     return [item for item in items if item["source"] in sources]
+
+
+def _demo_board_items() -> list[Item]:
+    """Open issues from followed boards that nobody asked you about yet."""
+    now = datetime.now(UTC)
+    rows = [
+        ("jira", "PLAT-2411", "Rotate the TLS certificates of the internal registry", "", "High"),
+        ("jira", "PLAT-2398", "Document the on-call handover", "Mara Schmid", "Medium"),
+        ("jira", "OPS-2417", "Alert when a backup job has not run for a day", "", "Highest"),
+        ("gitlab", "infra-live#212", "Drop the unused staging load balancer", "", ""),
+        (
+            "gitlab",
+            "ci-templates#88",
+            "Cache pip downloads in the Python template",
+            "Jonas Keller",
+            "",
+        ),
+    ]
+    items: list[Item] = []
+    for index, (source, key, title, assignee, priority) in enumerate(rows):
+        updated = now - timedelta(days=2 + index * 3, hours=index)
+        project = "platform/" + key.split("#")[0] if source == "gitlab" else key.split("-")[0]
+        items.append(
+            {
+                "id": f"jira:{key}" if source == "jira" else f"gitlab:issue:{900 + index}",
+                "source": source,
+                "key": key,
+                "title": title,
+                "url": "#",
+                "project": {"PLAT": "Platform", "OPS": "Operations"}.get(project, project),
+                "status": "To Do" if source == "jira" else "Open",
+                "state": "todo",
+                "type": "Task" if source == "jira" else "Issue",
+                "priority": priority,
+                "assignee": assignee,
+                "author": "Anna Weber",
+                "updated": updated.isoformat(),
+                "created": (updated - timedelta(days=12)).isoformat(),
+                "due": None,
+                "labels": [],
+                "relations": {"board"},
+            }
+        )
+    return items
 
 
 def _convert_jira_demo_items(items: list[Item]) -> None:
@@ -2666,6 +2821,7 @@ RELATIONS = frozenset(
         "watcher",
         "participant",
         "team",
+        "board",
     }
 )
 ITEM_TEXT_LIMITS = {
@@ -3525,6 +3681,7 @@ select {
 .col[data-col=todo] { --cc: var(--c-todo); }
 .col[data-col=waiting] { --cc: var(--c-wait); }
 .col[data-col=watch] { --cc: var(--c-watch); }
+.col[data-col=board] { --cc: var(--c-team); }
 .col[data-col=todo-issues], .col[data-col=todo-prs], .col[data-col=next] { --cc: var(--c-todo); }
 .col[data-col=changed] { --cc: var(--c-watch); }
 .overview .col[data-col=waiting] { --cc: var(--c-wait); }
@@ -3905,7 +4062,7 @@ kbd { font-family: var(--mono); font-size: 11.5px; border: 1px solid var(--borde
 "use strict";
 const REL = { assignee: "Assigned", changes: "Needs work", reporter: "Created", reviewer: "Review", commented: "Commented",
               mentioned: "Mentioned", mentioned_done: "Mentioned (answered)", watcher: "Watching", participant: "Involved",
-              team: "Team repo" };
+              team: "Team repo", board: "Board" };
 const REL_ORDER = Object.keys(REL);
 const STATE = { in_progress: "In progress", todo: "Open", done: "Closed" };
 const STATE_ORDER = ["in_progress", "todo", "done"];
@@ -3916,6 +4073,7 @@ const COLS = [
   { id: "todo", title: "To do", hint: "Assigned to you, review requested, changes needed or mentioned" },
   { id: "waiting", title: "Waiting on others", hint: "Created by you, now with someone else" },
   { id: "watch", title: "Watchlist", hint: "Watching, commented, involved or from team repos" },
+  { id: "board", title: "Boards", hint: "Open issues on the boards you follow, to pick work from" },
 ];
 const COL_NAME = Object.fromEntries(COLS.map(c => [c.id, c.title]));
 const DASH_COLS = [
@@ -3925,6 +4083,8 @@ const DASH_COLS = [
   { id: "watch", sec: "watch", title: "Watchlist", hint: "Watching, commented, involved or from team repos", empty: "Empty." },
 ];
 const ISSUE_COLS = COLS.map(c => ({ ...c, sec: c.id, empty: c.id === "todo" ? "Nothing open. Well done." : "Empty." }));
+// Items that only come from a followed board, not from anything you did.
+const onlyBoard = (it) => it.relations.length > 0 && it.relations.every(r => r === "board");
 function boardCol(it, view = ui.view) {
   const b = bucketOf(it);
   if (view === "dash") return b === "todo" ? (isPR(it) ? "todo-prs" : "todo-issues") : b;
@@ -4037,7 +4197,7 @@ function autoBucket(it) {
   const r = it.relations;
   if (r.includes("assignee") || r.includes("reviewer") || r.includes("mentioned") || r.includes("changes")) return "todo";
   if (r.includes("reporter")) return "waiting";
-  return "watch";
+  return onlyBoard(it) ? "board" : "watch";
 }
 const bucketOf = (it) => COL_NAME[local.bucket[it.id]] ? local.bucket[it.id] : autoBucket(it);
 function change(it) {
@@ -4278,6 +4438,7 @@ const NEXT_GROUPS = [
   { id: "doing", title: "In progress" },
   { id: "assigned", title: "Assigned to you" },
   { id: "testing", title: "In test or review", hint: "Your issues someone is checking now" },
+  { id: "board", title: "From your boards", hint: "Open issues on boards you follow" },
 ];
 // Issues in a test or review column are mostly with someone else, so they go last.
 const IN_TEST = /test|qa\b|review|verif|abnahme|prüf/i;
@@ -4288,6 +4449,7 @@ function nextGroup(it) {
   if (r.includes("reviewer")) return "review";
   if (due?.urgent && bucketOf(it) === "todo") return "due";
   if (r.includes("mentioned")) return "mention";
+  if (bucketOf(it) === "board") return "board";
   if (bucketOf(it) !== "todo") return null;
   if (!isPR(it) && IN_TEST.test(it.status || "")) return "testing";
   return it.state === "in_progress" ? "doing" : "assigned";
@@ -4310,10 +4472,12 @@ function renderOverview() {
   for (const it of open) { const g = nextGroup(it); if (g) groups[g].push(it); }
   groups.review.sort((a, b) => ts(a.created) - ts(b.created));            // longest waiting first
   groups.due.sort((a, b) => (a.due || "").localeCompare(b.due || ""));
-  for (const g of ["focus", "changes", "mention", "doing", "assigned", "testing"]) groups[g] = sorted(groups[g], "updated");
+  for (const g of ["focus", "changes", "mention", "doing", "assigned", "testing", "board"]) groups[g] = sorted(groups[g], "updated");
   const queue = NEXT_GROUPS.flatMap(g => groups[g.id]);
+  // Board issues are a pool to pick from: listed last, not counted, and their changes are not news.
+  const queued = queue.length - groups.board.length;
 
-  const changed = sorted(open.filter(listedAsChanged), "updated");
+  const changed = sorted(open.filter(it => bucketOf(it) !== "board" && listedAsChanged(it)), "updated");
   const unseen = changed.filter(it => change(it)).length;
   const waiting = open.filter(it => bucketOf(it) === "waiting").sort((a, b) => ts(a.updated) - ts(b.updated));
   const stale = waiting.filter(it => Date.now() - ts(it.updated) > STALE_DAYS * 86400000).length;
@@ -4323,7 +4487,7 @@ function renderOverview() {
       <div class="n">${n}</div><div class="l">${l}</div>${extra ? `<span class="kx">${extra}</span>` : ""}${goto ? `<span class="go" aria-hidden="true">›</span>` : ""}</${goto ? "button" : "div"}>`;
   const blocking = groups.review.length + groups.changes.length;
   $("#stats").innerHTML =
-    kpi(queue.length, "Next up", "var(--c-todo)", groups.doing.length ? `${groups.doing.length} in progress` : "") +
+    kpi(queued, "Next up", "var(--c-todo)", groups.doing.length ? `${groups.doing.length} in progress` : "") +
     kpi(blocking, "PRs waiting for you", "var(--c-todo)", groups.changes.length ? `${groups.changes.length} Needs work` : "", groups.changes.length > 0, "prs") +
     kpi(groups.due.length + ownUrgent, "Due / overdue", "var(--danger)", ownUrgent ? `incl. ${ownUrgent} of your tasks` : "", groups.due.length + ownUrgent > 0, "issues") +
     kpi(unseen, "New / changed", "var(--c-watch)") +
@@ -4351,7 +4515,7 @@ function renderOverview() {
     : `<div class="cempty">Nothing of yours is with others right now.</div>`;
   const head = (title, n, hint, action) => `<div class="chead"><div><h2 class="ttl">${title} <span class="cnt">${n}</span></h2><div class="hint">${hint}</div></div>${action || ""}</div>`;
   $("#list").innerHTML = `<div class="overview">
-    <section class="card col" data-col="next">${head("Next up", queue.length, `Sorted by urgency, start at the top. ${TOUCH ? "Tap ☆" : "Press S"} to pin something to the very top.`)}${nextBody}</section>
+    <section class="card col" data-col="next">${head("Next up", queued, `Sorted by urgency, start at the top. ${TOUCH ? "Tap ☆" : "Press S"} to pin something to the very top.`)}${nextBody}</section>
     <div class="ostack">
       <section class="card col" data-col="changed">${head("Since your last visit", changed.length, "New and changed items from all sources",
         unseen ? `<button class="clear" data-act="seen-all">Mark all ${unseen} as seen</button>` : "")}${changedBody}</section>
@@ -4362,8 +4526,9 @@ function renderOverview() {
 
 function renderDash() {
   const issuesOnly = ui.view === "issues";
-  const defs = issuesOnly ? ISSUE_COLS : DASH_COLS;
   const open = data.items.filter(it => it.state !== "done" && matches(it) && (!issuesOnly || !isPR(it)));
+  // The Boards column appears once boards are followed in the config.
+  const defs = issuesOnly ? ISSUE_COLS.filter(c => c.id !== "board" || open.some(it => bucketOf(it) === "board")) : DASH_COLS;
   const cols = {}, hid = {};
   defs.forEach(c => { cols[c.id] = []; hid[c.id] = []; });
   for (const it of open) (isHidden(it) ? hid : cols)[boardCol(it)].push(it);
@@ -4390,7 +4555,7 @@ function renderDash() {
     $("#list").innerHTML = `<div class="card empty">${data.fetched_at ? "No items found." : "Loading data …"}</div>`;
     return;
   }
-  $("#list").innerHTML = `<div class="dash${issuesOnly ? "" : " four"}">${defs.map(c => {
+  $("#list").innerHTML = `<div class="dash${defs.length === 4 ? " four" : ""}">${defs.map(c => {
     const list = cols[c.id], hidden = hid[c.id], showH = ui.showHidden[c.id];
     const secs = colSections(c.sec, list);
     const changed = list.filter(it => change(it)).length;
