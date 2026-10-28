@@ -4,6 +4,8 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.4.0] – 2026-10-28
+
 ### Added
 - Follow and unfollow boards from the app: **?** → *Boards you follow*, or "Follow a board" on the Issues tab. Paste the board link from the browser; On My Plate checks that it is a board of your Jira or GitLab and saves it in the config file.
 
@@ -97,7 +99,8 @@ First public release.
   - Server fields checked and cleaned before they reach the UI.
   - A config that another user could change is refused, so nobody can redirect tokens.
 
-[Unreleased]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.5...v0.2.0
