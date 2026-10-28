@@ -4,6 +4,9 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+- On the dashboard, a long "Follow up" list no longer squeezes "Since your last visit" down to its header. Both cards share the height evenly; a short one gives its unused space to the other.
+
 ## [0.2.0] – 2026-10-28
 
 ### Added

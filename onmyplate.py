@@ -3736,7 +3736,9 @@ kbd { font-family: var(--mono); font-size: 11.5px; border: 1px solid var(--borde
   .overview { height: 100%; }
   .overview > .col { max-height: 100%; }
   .ostack { height: 100%; min-height: 0; }
-  .ostack > .col { flex: 0 1 auto; min-height: 0; overflow: auto; }
+  /* Equal halves, so a long list cannot squeeze the other card to its header.
+     A card shorter than its half keeps its height and leaves the rest to the other. */
+  .ostack > .col { flex: 1 1 0; min-height: 0; max-height: max-content; overflow: auto; }
   .view-list #list > .card { max-height: 100%; overflow: auto; overscroll-behavior: contain; }
   aside { position: static; overflow: auto; min-height: 0; align-content: start; padding-bottom: 14px; }
   .foot { margin-top: 0; padding: 0 2px; }
