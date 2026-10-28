@@ -4,6 +4,8 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.3.0] – 2026-10-28
+
 ### Added
 - Follow Jira and GitLab boards with `jira.watch_boards` and `gitlab.watch_boards`: paste the board links from the browser. Their open issues, board and backlog, appear in a new Boards column on the Issues tab and as "From your boards" at the end of Next up, so you can pick your next task there. Issues you are already involved in stay where they were.
 
@@ -92,7 +94,8 @@ First public release.
   - Server fields checked and cleaned before they reach the UI.
   - A config that another user could change is refused, so nobody can redirect tokens.
 
-[Unreleased]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.5...v0.2.0
 [0.1.5]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.4...v0.1.5
