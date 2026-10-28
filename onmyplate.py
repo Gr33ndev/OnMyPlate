@@ -87,7 +87,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, ClassVar
 
-VERSION = "0.1.5"
+VERSION = "0.2.0"
 APP_DIR = Path(__file__).resolve().parent
 SOURCE_NAMES = ("jira", "gitlab", "bitbucket")
 SOURCE_LABELS = {"jira": "Jira", "gitlab": "GitLab", "bitbucket": "Bitbucket"}

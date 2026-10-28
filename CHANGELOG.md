@@ -4,6 +4,8 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.2.0] – 2026-10-28
+
 ### Added
 - Jira also finds issues where you are a request participant (Jira Service Management) or mentioned in the description or a comment. A mention counts as answered once you comment after it. Instances that do not support these searches skip them quietly.
 
@@ -82,7 +84,8 @@ First public release.
   - Server fields checked and cleaned before they reach the UI.
   - A config that another user could change is refused, so nobody can redirect tokens.
 
-[Unreleased]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.5...v0.2.0
 [0.1.5]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.1.2...v0.1.3
