@@ -166,7 +166,7 @@ On Jira and Bitbucket a mention counts as answered once you comment after it, on
 | `jira.scope_jql` | `""` | Extra JQL ANDed to every query, e.g. `project in (PLAT, OPS)` |
 | `jira.participation_jql` | `null` | Custom JQL for "involved", e.g. a ScriptRunner `issueFunction in commented("by currentUser()")` |
 | `jira.include_done`, `gitlab.include_closed`, `bitbucket.include_closed` | `false` | Also show finished work |
-| `jira.watch_boards`, `gitlab.watch_boards` | `[]` | Board links copied from the browser, e.g. `https://jira.example/secure/RapidBoard.jspa?rapidView=42` or `https://gitlab.example/group/project/-/boards/7`. Their open issues appear in the Boards column of the Issues tab and at the end of Next up |
+| `jira.watch_boards`, `gitlab.watch_boards` | `[]` | Board links copied from the browser, e.g. `https://jira.example/secure/RapidBoard.jspa?rapidView=42` or `https://gitlab.example/group/project/-/boards/7`. Their open issues appear in the Boards column of the Issues tab and at the end of Next up. Easiest from the app: **?** → *Boards you follow*, paste the link, **Follow** |
 | `gitlab.watch_projects` | `[]` | Projects or groups whose open MRs appear under Team repos |
 | `bitbucket.watch_repos` | `[]` | `PROJ` or `PROJ/repo` whose open PRs appear under Team repos |
 | `bitbucket.username` | `""` | Only needed if your server does not send `X-AUSERNAME` |

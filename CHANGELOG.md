@@ -4,6 +4,9 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Added
+- Follow and unfollow boards from the app: **?** → *Boards you follow*, or "Follow a board" on the Issues tab. Paste the board link from the browser; On My Plate checks that it is a board of your Jira or GitLab and saves it in the config file.
+
 ## [0.3.0] – 2026-10-28
 
 ### Added

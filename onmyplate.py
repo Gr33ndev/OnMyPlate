@@ -1282,9 +1282,10 @@ class JiraSource(Source):
                 mentions.append(created)
         return bool(mine) and (not mentions or max(mine) > max(mentions))
 
-    def _board_id(self, entry: object) -> str | None:
-        """Read the board number from a board link on this Jira, e.g. ?rapidView=42."""
-        if not isinstance(entry, str) or not entry.strip().startswith(self.base + "/"):
+    @staticmethod
+    def board_id(base: str, entry: object) -> str | None:
+        """Read the board number from a board link on the Jira at ``base``, e.g. ?rapidView=42."""
+        if not isinstance(entry, str) or not entry.strip().startswith(base + "/"):
             return None
         parts = urllib.parse.urlsplit(entry.strip())
         board = urllib.parse.parse_qs(parts.query).get("rapidView", [""])[0]
@@ -1297,7 +1298,7 @@ class JiraSource(Source):
         agile = re.sub(r"/rest/api/\d+$", "/rest/agile/1.0", self.api or "")
         filters: list[str] = []
         for entry in self.cfg.get("watch_boards") or []:
-            board = self._board_id(entry)
+            board = self.board_id(self.base, entry)
             if not board:
                 warnings.append(
                     f"Jira: ignoring watch_boards entry '{sanitize(entry, 80)}'. "
@@ -1755,11 +1756,12 @@ class GitLabSource(Source):
                     if isinstance(raw, dict):
                         add(raw, "mr", "team")
 
-    def _parse_board(self, entry: object) -> tuple[str, str, str] | None:
-        """Return (projects|groups, path, board id or "") for a board link on this GitLab."""
-        if not isinstance(entry, str) or not entry.strip().startswith(self.base + "/"):
+    @staticmethod
+    def parse_board(base: str, entry: object) -> tuple[str, str, str] | None:
+        """Return (projects|groups, path, board id or "") for a board link on the GitLab at ``base``."""
+        if not isinstance(entry, str) or not entry.strip().startswith(base + "/"):
             return None
-        path = urllib.parse.urlsplit(entry.strip()[len(self.base) :]).path.strip("/")
+        path = urllib.parse.urlsplit(entry.strip()[len(base) :]).path.strip("/")
         match = RE_GITLAB_BOARD.fullmatch(path)
         if not match:
             return None
@@ -1775,7 +1777,7 @@ class GitLabSource(Source):
         """
         boards = []
         for entry in self.cfg.get("watch_boards") or []:
-            parsed = self._parse_board(entry)
+            parsed = self.parse_board(self.base, entry)
             if parsed:
                 boards.append(parsed)
             else:
@@ -2265,6 +2267,12 @@ SOURCE_CLASSES: dict[str, type[Source]] = {
     "gitlab": GitLabSource,
     "bitbucket": BitbucketSource,
 }
+# Sources whose boards can be followed, with the parser that recognises a board link.
+BOARD_PARSERS: dict[str, Callable[[str, object], object]] = {
+    "jira": JiraSource.board_id,
+    "gitlab": GitLabSource.parse_board,
+}
+MAX_WATCH_BOARDS = 20
 
 
 # --------------------------------------------------------------------------- #
@@ -2655,6 +2663,7 @@ class Store:
         self.config_mtime = self._mtime()
         self.lock = threading.Lock()
         self.refresh_lock = threading.Lock()
+        self.config_lock = threading.Lock()
         self.by_source: dict[str, dict[str, Any]] = {}
         self.source_errors: dict[str, str] = {}
         self.token_origins: dict[str, str] = {}
@@ -2704,6 +2713,67 @@ class Store:
                 if not (self.cfg.get(name) or {}).get("enabled"):
                     del self.by_source[name]
         return None
+
+    def change_boards(self, action: object, url: object) -> str | None:
+        """Follow or unfollow a board in the config file; return a message for the user on failure."""
+        if self.demo or self.config_path is None:
+            return "Boards can only be followed with a config file, not in demo mode."
+        if action not in ("add", "remove") or not isinstance(url, str) or len(url) > 2000:
+            return "Send a board link and whether to add or remove it."
+        url = url.strip()
+        with self.config_lock:
+            reason = untrusted_reason(self.config_path)
+            if reason:
+                return f"The config was not changed because {reason}."
+            try:
+                user = json.loads(self.config_path.read_text("utf-8"))
+            except (OSError, ValueError):
+                user = None
+            if not isinstance(user, dict):
+                return f"Cannot read {self.config_path.name}. Fix it in an editor, then try again."
+            # Never write a plaintext token back: move it to the keychain first, as a reload would.
+            try:
+                move_tokens_to_keychain(self.config_path, user)
+            except SourceError as exc:
+                return str(exc)
+            error = self._edit_boards(user, action, url)
+            if error:
+                return error
+            write_private(self.config_path, json.dumps(user, indent=2, ensure_ascii=False))
+        return None
+
+    def _edit_boards(self, user: dict[str, Any], action: str, url: str) -> str | None:
+        for name in BOARD_PARSERS:
+            section = user.get(name)
+            boards = section.get("watch_boards") if isinstance(section, dict) else None
+            if action == "remove" and isinstance(boards, list) and url in boards:
+                boards.remove(url)
+                return None
+        if action == "remove":
+            return "This board is not followed."
+        for name, parse in BOARD_PARSERS.items():
+            base = str((self.cfg.get(name) or {}).get("url") or "").rstrip("/")
+            board = parse(base, url) if base else None
+            if not board:
+                continue
+            section = user.setdefault(name, {})
+            if not isinstance(section, dict):
+                return f'"{name}" in the config is not an object. Fix it in an editor first.'
+            boards = section.setdefault("watch_boards", [])
+            if not isinstance(boards, list):
+                return (
+                    f'"{name}.watch_boards" in the config is not a list. Fix it in an editor first.'
+                )
+            if any(parse(base, entry) == board for entry in boards):
+                return "You already follow this board."
+            if len(boards) >= MAX_WATCH_BOARDS:
+                return f"You can follow up to {MAX_WATCH_BOARDS} boards per source."
+            boards.append(url)
+            return None
+        return (
+            "This is not a board link of your Jira or GitLab. Open the board in the browser "
+            "and copy the address, for example …/secure/RapidBoard.jspa?rapidView=42 or …/-/boards/7."
+        )
 
     def _sources(self) -> tuple[list[Source], dict[str, str]]:
         http = HttpClient(self.cfg)
@@ -2804,6 +2874,13 @@ class Store:
                     "token": self.token_origins.get(name, ""),
                     "ok_at": (self.by_source.get(name) or {}).get("ok_at"),
                     "error": sanitize(self.source_errors.get(name, ""), 500),
+                    "boards": [
+                        sanitize(entry, 300)
+                        for entry in section.get("watch_boards") or []
+                        if isinstance(entry, str)
+                    ]
+                    if name in BOARD_PARSERS
+                    else None,
                 }
             )
         return {"config": str(self.config_path or ""), "sources": sources}
@@ -3074,11 +3151,19 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.server.store.refresh()
             self._send(200, self.server.store.snapshot())
             return
-        if path not in ("/api/local", "/api/todos"):
+        if path not in ("/api/local", "/api/todos", "/api/boards"):
             self._send(404, {"error": "not found"})
             return
         data = self._read_json()
         if data is None:
+            return
+        if path == "/api/boards":
+            error = self.server.store.change_boards(data.get("action"), data.get("url"))
+            if error:
+                self._send(400, {"error": error})
+                return
+            self.server.store.refresh()
+            self._send(200, self.server.store.snapshot())
             return
         if path == "/api/local":
             data.pop("todos", None)
@@ -3857,6 +3942,14 @@ aside h2 span { color: var(--muted); font-weight: 500; }
 .setup th { font-size: 11px; color: var(--muted); font-weight: 600; border-top: 0; }
 .setup .ok { color: var(--ok); font-weight: 600; } .setup .bad { color: var(--danger); font-weight: 600; } .setup .off { color: var(--muted); }
 .setup p { margin: 8px 0; color: var(--muted); }
+.bform { display: flex; gap: 6px; margin: 8px 0; }
+.bform input { flex: 1; min-width: 0; padding: 6px 9px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--panel); color: var(--text); outline: none; }
+.bform input:focus { border-color: var(--accent); }
+.blist { list-style: none; margin: 0; padding: 0; }
+.blist li { display: flex; gap: 8px; align-items: baseline; padding: 4px 0; border-top: 1px solid var(--border); }
+.blist li code { flex: 1; }
+.setup .bmsg:empty { display: none; }
+.setup #boardsTitle { margin-top: 18px; }
 .setup code, .about code { font-family: var(--mono); font-size: 12px; word-break: break-all; color: var(--text); }
 .banner .clear { font-size: 13px; margin-left: 6px; }
 
@@ -4529,6 +4622,9 @@ function renderDash() {
   const open = data.items.filter(it => it.state !== "done" && matches(it) && (!issuesOnly || !isPR(it)));
   // The Boards column appears once boards are followed in the config.
   const defs = issuesOnly ? ISSUE_COLS.filter(c => c.id !== "board" || open.some(it => bucketOf(it) === "board")) : DASH_COLS;
+  // Where to offer following a board: under the Boards column, or the Watchlist before there is one.
+  const canFollow = issuesOnly && (data.setup?.sources || []).some(x => x.enabled && Array.isArray(x.boards));
+  const followHere = !canFollow ? "" : defs.some(c => c.id === "board") ? "board" : "watch";
   const cols = {}, hid = {};
   defs.forEach(c => { cols[c.id] = []; hid[c.id] = []; });
   for (const it of open) (isHidden(it) ? hid : cols)[boardCol(it)].push(it);
@@ -4566,6 +4662,7 @@ function renderDash() {
     const foot = [
       changed ? `<button class="clear" data-act="seen-col" data-col="${c.id}">Mark all ${changed} as seen</button>` : "",
       hidden.length ? `<button class="clear" data-act="toggle-hidden" data-col="${c.id}">${showH ? "Collapse hidden items" : `Show ${hidden.length} hidden`}</button>` : "",
+      c.id === followHere ? `<button class="clear" data-act="show-boards">${c.id === "board" ? "Follow another board" : "Follow a board"}</button>` : "",
     ].filter(Boolean).join("");
     return `<section class="card col" data-col="${c.id}">
       <div class="chead"><div><h2 class="ttl">${c.title} <span class="cnt">${list.length}</span></h2><div class="hint">${c.hint}</div></div></div>
@@ -4857,8 +4954,17 @@ function renderSetup() {
     return `<tr><td>${esc(x.label)}</td><td>${state}</td><td>${x.enabled ? esc(x.url || "") : "—"}</td><td>${tok}</td></tr>
       ${x.error ? `<tr><td></td><td colspan="3" class="bad" style="font-weight:400">${esc(x.error)}</td></tr>` : ""}`;
   }).join("");
+  const withBoards = (st.sources || []).filter(x => x.enabled && Array.isArray(x.boards));
+  const followed = withBoards.flatMap(x => x.boards.map(url => `<li><span class="off">${esc(x.label)}</span><code>${esc(url)}</code>
+      <button class="btn sm" data-act="unfollow-board" data-url="${esc(url)}" aria-label="Unfollow ${esc(url)}">Unfollow</button></li>`)).join("");
+  const boards = st.config && withBoards.length ? `<h4 id="boardsTitle">Boards you follow</h4>
+    <p>Open issues of these boards and their backlogs appear in the Boards column of the Issues tab and at the end of Next up.</p>
+    ${followed ? `<ul class="blist">${followed}</ul>` : ""}
+    <form class="bform" id="boardForm"><input type="url" name="url" required maxlength="2000" autocomplete="off"
+      placeholder="Paste a board link from ${esc(withBoards.map(x => x.label).join(" or "))}" aria-label="Board link"><button class="btn sm">Follow</button></form>
+    <p class="bmsg" id="boardMsg" role="status"></p>` : "";
   $("#setup").innerHTML = `<h4 id="setupTitle">Sources</h4>${data.demo ? "<p>Demo mode: sample data, no sources are contacted.</p>" : ""}
-    ${rows ? `<table><thead><tr><th>Source</th><th>Status</th><th>URL</th><th>Token</th></tr></thead><tbody>${rows}</tbody></table>` : ""}
+    ${rows ? `<table><thead><tr><th>Source</th><th>Status</th><th>URL</th><th>Token</th></tr></thead><tbody>${rows}</tbody></table>` : ""}${boards}
     ${st.config ? `<p>Change URLs or sources in <code>${esc(st.config)}</code>, then press <b>Refresh</b>: the file is read again, no restart needed.</p>
       <p>Tokens are never stored in that file. Store one in the system keychain with <code>onmyplate --set-token jira</code> (or <code>gitlab</code>, <code>bitbucket</code>),
       or provide it with <code>"token_command"</code> or <code>ONMYPLATE_JIRA_TOKEN</code>, <code>ONMYPLATE_GITLAB_TOKEN</code>, <code>ONMYPLATE_BITBUCKET_TOKEN</code>.</p>` : ""}`;
@@ -4885,7 +4991,26 @@ $("#todoForm").addEventListener("submit", e => {
   todos.unshift(t);
   $("#todoInput").value = ""; $("#todoDue").value = ""; saveTodos(); render();
 });
+// Following a board writes the config file; the server checks the link and answers with fresh data.
+async function changeBoard(action, url) {
+  const msg = $("#boardMsg");
+  if (msg) msg.textContent = action === "add" ? "Loading the board …" : "Saving …";
+  let error = "";
+  try {
+    const r = await fetch("/api/boards", { method: "POST", headers: { "Content-Type": "application/json", "X-OnMyPlate-Token": token },
+                                           body: JSON.stringify({ action, url }) });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) { data = Object.assign({ items: [], errors: [], warnings: [] }, j); baseline(); render(); }
+    else error = j.error || "The board could not be saved.";
+  } catch { error = "Local On My Plate server unreachable. Is the script still running?"; }
+  renderSetup();
+  $("#boardMsg").textContent = error || (action === "add" ? "Following the board." : "Board removed.");
+  // Keep a rejected link in the field so it can be corrected.
+  if (error && action === "add") $("#boardForm input").value = url;
+  if (action === "add") $("#boardForm input").focus();
+}
 document.addEventListener("submit", e => {
+  if (e.target.id === "boardForm") { e.preventDefault(); changeBoard("add", e.target.elements.url.value.trim()); return; }
   const f = e.target.closest(".tedit"); if (!f) return;
   e.preventDefault();
   const t = todos.find(x => x.id === f.dataset.tid), text = f.elements.text.value.trim();
@@ -4918,6 +5043,8 @@ document.addEventListener("click", e => {
   if (act === "help-close") { toggleHelp(false); return; }
   if (act === "licenses") { toggleLicenses(el); return; }
   if (act === "show-setup") { toggleHelp(true, "#setup"); return; }
+  if (act === "show-boards") { toggleHelp(true, "#boardsTitle"); $("#boardForm input")?.focus(); return; }
+  if (act === "unfollow-board") { changeBoard("remove", el.dataset.url); return; }
   const it = id && data.items.find(i => i.id === id);
   switch (act) {
     case "pin": local.pins = local.pins.includes(id) ? local.pins.filter(x => x !== id) : [...local.pins, id]; saveLocal(); render(); break;

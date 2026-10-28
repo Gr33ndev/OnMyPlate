@@ -851,6 +851,100 @@ class StoreTests(unittest.TestCase):
 # --------------------------------------------------------------------------- #
 
 
+class FollowBoardTests(DataDirCase):
+    """Following a board from the UI rewrites the config file, and nothing else in it."""
+
+    JIRA = "https://jira.example"
+    GITLAB = "https://gitlab.example"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.root.chmod(0o700)
+        self.keychain = test_onmyplate.MemoryKeychain()
+        patcher = mock.patch.object(wl, "_KEYCHAIN", self.keychain)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.path = self.root / "onmyplate.config.json"
+        self.user = {
+            "refresh_minutes": 5,
+            "jira": {"url": self.JIRA, "enabled": False},
+            "gitlab": {"url": self.GITLAB, "enabled": False, "watch_projects": ["platform"]},
+        }
+        wl.write_private(self.path, json.dumps(self.user))
+        self.store = wl.Store(wl.merge_config(wl.DEFAULT_CONFIG, self.user), config_path=self.path)
+
+    def saved(self) -> dict[str, Any]:
+        return json.loads(self.path.read_text())
+
+    def test_follow_and_unfollow_keep_the_rest_of_the_config(self) -> None:
+        jira_board = f"{self.JIRA}/secure/RapidBoard.jspa?rapidView=42"
+        gitlab_board = f"{self.GITLAB}/platform/infra/-/boards/7"
+        self.assertIsNone(self.store.change_boards("add", jira_board))
+        self.assertIsNone(self.store.change_boards("add", f"  {gitlab_board}  "))
+        saved = self.saved()
+        self.assertEqual(saved["jira"]["watch_boards"], [jira_board])
+        self.assertEqual(saved["gitlab"]["watch_boards"], [gitlab_board])
+        self.assertEqual(saved["gitlab"]["watch_projects"], ["platform"])
+        self.assertEqual(saved["refresh_minutes"], 5)
+        self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
+        self.assertIsNone(self.store.change_boards("remove", jira_board))
+        self.assertEqual(self.saved()["jira"]["watch_boards"], [])
+
+    def test_bad_links_and_requests_change_nothing(self) -> None:
+        board = f"{self.JIRA}/jira/software/projects/PLAT/boards/42"
+        self.assertIsNone(self.store.change_boards("add", board))
+        before = self.path.read_text()
+        cases = {
+            ("add", f"{self.JIRA}/secure/RapidBoard.jspa?rapidView=42"): "already follow",
+            ("add", "https://jira.evil.example/secure/RapidBoard.jspa?rapidView=1"): "not a board",
+            ("add", f"{self.JIRA}/browse/PLAT-1"): "not a board",
+            ("add", 42): "Send a board link",
+            ("delete", board): "Send a board link",
+            ("remove", f"{self.GITLAB}/x/-/boards/1"): "not followed",
+        }
+        for (action, url), message in cases.items():
+            with self.subTest(action=action, url=url):
+                self.assertIn(message, self.store.change_boards(action, url))
+        self.assertEqual(self.path.read_text(), before)
+
+    def test_board_limit(self) -> None:
+        for number in range(wl.MAX_WATCH_BOARDS):
+            board = f"{self.GITLAB}/platform/p{number}/-/boards"
+            self.assertIsNone(self.store.change_boards("add", board))
+        self.assertIn("up to", self.store.change_boards("add", f"{self.GITLAB}/x/-/boards"))
+
+    def test_untrusted_or_broken_config_is_not_written(self) -> None:
+        self.path.chmod(0o666)
+        board = f"{self.JIRA}/secure/RapidBoard.jspa?rapidView=1"
+        self.assertIn("not changed", self.store.change_boards("add", board))
+        self.path.chmod(0o600)
+        self.path.write_text("{broken")
+        self.assertIn("Cannot read", self.store.change_boards("add", board))
+        self.assertEqual(self.path.read_text(), "{broken")
+
+    def test_a_token_in_the_file_is_moved_not_written_back(self) -> None:
+        wl.write_private(
+            self.path, json.dumps({**self.user, "jira": {"url": self.JIRA, "token": "t0k"}})
+        )
+        board = f"{self.JIRA}/secure/RapidBoard.jspa?rapidView=1"
+        self.assertIsNone(self.store.change_boards("add", board))
+        self.assertNotIn("t0k", self.path.read_text())
+        self.assertEqual(self.keychain.get("jira@jira.example"), "t0k")
+
+    def test_demo_mode_cannot_follow(self) -> None:
+        demo = wl.Store(wl.merge_config(wl.DEFAULT_CONFIG, {}), demo=True)
+        self.assertIn("demo", demo.change_boards("add", f"{self.JIRA}/boards/1"))
+
+    def test_setup_lists_followed_boards_without_bitbucket(self) -> None:
+        board = f"{self.GITLAB}/platform/infra/-/boards/7"
+        self.store.change_boards("add", board)
+        self.store.refresh()
+        sources = {s["name"]: s for s in self.store.snapshot()["setup"]["sources"]}
+        self.assertEqual(sources["gitlab"]["boards"], [board])
+        self.assertEqual(sources["jira"]["boards"], [])
+        self.assertIsNone(sources["bitbucket"]["boards"])
+
+
 class ApiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -936,6 +1030,15 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.call("POST", "/api/login", {"code": 1})[0], 401)
         self.assertEqual(self.call("POST", "/api/login", {"code": "made-up"})[0], 401)
         self.assertEqual(self.call("POST", "/api/login", {}, {"Host": "evil.example"})[0], 403)
+
+    def test_boards_endpoint_is_protected_and_refused_in_demo(self) -> None:
+        board = {"action": "add", "url": "https://jira.example/secure/RapidBoard.jspa?rapidView=1"}
+        status, body, _ = self.call("POST", "/api/boards", board)
+        self.assertEqual((status, json.loads(body)["error"][:6]), (400, "Boards"))
+        self.assertEqual(self.call("POST", "/api/boards", board, {wl.TOKEN_HEADER: ""})[0], 401)
+        cross_site = {"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"}
+        self.assertEqual(self.call("POST", "/api/boards", board, cross_site)[0], 403)
+        self.assertEqual(self.call("POST", "/api/boards", b"[1]")[0], 400)
 
     def test_same_site_requests_are_rejected(self) -> None:
         self.assertEqual(

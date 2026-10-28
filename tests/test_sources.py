@@ -334,9 +334,12 @@ class JiraTests(RoutesCase):
         self.assertIn("cannot read board 43", warnings[0])
         self.assertIn("ignoring watch_boards entry", warnings[1])
         self.assertEqual(
-            source._board_id(f"{jira}/jira/software/projects/PLAT/boards/7/backlog"), "7"
+            wl.JiraSource.board_id(jira, f"{jira}/jira/software/projects/PLAT/boards/7/backlog"),
+            "7",
         )
-        self.assertIsNone(source._board_id(f"{jira}/secure/RapidBoard.jspa?rapidView=../1"))
+        self.assertIsNone(
+            wl.JiraSource.board_id(jira, f"{jira}/secure/RapidBoard.jspa?rapidView=../1")
+        )
 
     def test_cloud_type_is_detected_and_cloud_id_checked(self) -> None:
         cfg = wl.merge_config(
