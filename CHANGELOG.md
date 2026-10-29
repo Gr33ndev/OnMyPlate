@@ -4,6 +4,12 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Added
+- Follow only part of a Jira board: select the board's quick filters before you copy the link, or add JQL such as `component = Payments` when you follow it (in the app, or as `{"url": "…", "jql": "…"}` in `jira.watch_boards`).
+
+### Fixed
+- GitLab issues and merge requests where you only replied in a thread or commented on a diff now show up as *Commented*. Such comments were missed before.
+
 ## [0.4.0] – 2026-10-28
 
 ### Added

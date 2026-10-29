@@ -79,13 +79,18 @@ class Routes(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
 
+class FakeServer(ThreadingHTTPServer):
+    # Sources send up to eight requests at once; the default backlog of 5 resets some on macOS.
+    request_queue_size = 32
+
+
 class RoutesCase(unittest.TestCase):
     server: ThreadingHTTPServer
     base: str
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), Routes)
+        cls.server = FakeServer(("127.0.0.1", 0), Routes)
         cls.base = f"http://127.0.0.1:{cls.server.server_address[1]}"
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
 
@@ -341,6 +346,47 @@ class JiraTests(RoutesCase):
             wl.JiraSource.board_id(jira, f"{jira}/secure/RapidBoard.jspa?rapidView=../1")
         )
 
+    def test_followed_boards_can_be_narrowed(self) -> None:
+        searched: list[str] = []
+
+        def search(_: dict[str, str], body: dict[str, Any]) -> Reply:
+            searched.append(body["jql"])
+            return ok({"issues": [], "total": 0})
+
+        agile = "/jira/rest/agile/1.0/board"
+        Routes.routes = {
+            ("GET", "/jira/rest/api/2/myself"): ok({"name": "sam"}),
+            ("POST", "/jira/rest/api/2/search"): search,
+            ("GET", agile + "/42/configuration"): ok({"filter": {"id": "10100"}}),
+            ("GET", agile + "/42/quickfilter/7"): ok({"id": 7, "jql": "component = Payments"}),
+            ("GET", agile + "/42/quickfilter/8"): status(404),
+        }
+        jira = f"{self.base}/jira"
+        board = f"{jira}/secure/RapidBoard.jspa?rapidView=42"
+        source = self.source(
+            wl.JiraSource,
+            "jira",
+            type="server",
+            participation_jql="x = y",
+            watch_boards=[
+                f"{board}&quickFilter=7",
+                {"url": board, "jql": "labels = mine\n  AND priority = High"},
+                {"url": f"{board}&quickFilter=8", "jql": "labels = x"},
+            ],
+        )
+        _, warnings = source.fetch()
+        tail = " AND statusCategory != Done ORDER BY updated DESC"
+        self.assertEqual(
+            sorted(jql for jql in searched if "filter = 10100" in jql),
+            [
+                "((filter = 10100) AND (component = Payments))" + tail,
+                "((filter = 10100) AND (labels = mine AND priority = High))" + tail,
+            ],
+        )
+        # A quick filter that cannot be read must not widen the board to all its issues.
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("cannot read quick filter 8 of board 42", warnings[0])
+
     def test_cloud_type_is_detected_and_cloud_id_checked(self) -> None:
         cfg = wl.merge_config(
             wl.DEFAULT_CONFIG,
@@ -444,10 +490,33 @@ class GitLabTests(RoutesCase):
             return ok([])
 
         events = [
-            {"project_id": 11, "note": {"noteable_type": "Issue", "noteable_iid": 1}},
-            {"project_id": 11, "note": {"noteable_type": "Issue", "noteable_iid": 9}},
-            {"project_id": "x", "note": {"noteable_type": "Issue", "noteable_iid": 1}},
+            {
+                "project_id": 11,
+                "target_type": "Note",
+                "note": {"noteable_type": "Issue", "noteable_iid": 1},
+            },
+            {
+                "project_id": 11,
+                "target_type": "Note",
+                "note": {"noteable_type": "Issue", "noteable_iid": 9},
+            },
+            {
+                "project_id": "x",
+                "target_type": "Note",
+                "note": {"noteable_type": "Issue", "noteable_iid": 1},
+            },
+            # A reply in a thread: GitLab's target_type=note filter would drop it.
+            {
+                "project_id": 11,
+                "target_type": "DiscussionNote",
+                "note": {"noteable_type": "Issue", "noteable_iid": 12},
+            },
         ]
+
+        def user_events(query: dict[str, str], _: Any) -> Reply:
+            wanted = query.get("target_type")
+            return ok([e for e in events if not wanted or e["target_type"] == wanted.capitalize()])
+
         Routes.routes = {
             ("GET", self.API + "/user"): ok({"id": 42}),
             ("GET", self.API + "/issues"): issues,
@@ -457,8 +526,9 @@ class GitLabTests(RoutesCase):
             ("GET", self.API + "/groups/platform%2Finfra/merge_requests"): ok(
                 [gitlab_item(101, 8, "mr")]
             ),
-            ("GET", self.API + "/events"): ok(events),
+            ("GET", self.API + "/events"): user_events,
             ("GET", self.API + "/projects/11/issues/9"): ok(gitlab_item(9, 9)),
+            ("GET", self.API + "/projects/11/issues/12"): ok(gitlab_item(12, 12)),
         }
         source = self.source(
             wl.GitLabSource, "gitlab", watch_projects=["platform/infra", "not a path!"]
@@ -473,6 +543,7 @@ class GitLabTests(RoutesCase):
                 "gitlab:issue:4": {"mentioned_done"},
                 "gitlab:mr:101": {"team"},
                 "gitlab:issue:9": {"commented"},
+                "gitlab:issue:12": {"commented"},
             },
         )
         self.assertEqual(len(warnings), 1)

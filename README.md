@@ -142,11 +142,11 @@ Without a keychain, a token in the config file is refused instead of being store
 | | Jira | GitLab | Bitbucket |
 |---|---|---|---|
 | Assigned / created / watching | JQL `assignee`, `reporter`, `watcher`, `"Request participants"` (Service Management) | `scope=assigned_to_me`, `created_by_me` (GitLab has no API to list items you are subscribed to) | n/a |
-| Commented | Data Center: built-in activity stream. Cloud: `updatedBy()` | Events API | n/a |
+| Commented | Data Center: built-in activity stream. Cloud: `updatedBy()` | Events API, including replies in threads and comments on diffs | n/a |
 | Mentioned | JQL `description ~ currentUser()`, `comment ~ currentUser()` | GitLab to-dos (`mentioned`, `directly_addressed`) | Scans comments of recent open PRs for `@you` |
 | Reviews / your PRs | n/a | `reviewer_id`, `created_by_me`, `assigned_to_me` | Dashboard API, roles `REVIEWER`, `AUTHOR`, `PARTICIPANT` |
 | Team repos | n/a | `watch_projects` (project or group) | `watch_repos` (`PROJ` or `PROJ/repo`) |
-| Boards you follow | `watch_boards`: open issues of the board's filter (board and backlog) | `watch_boards`: open issues within the board's labels, milestone and assignee (board and backlog) | n/a |
+| Boards you follow | `watch_boards`: open issues of the board's filter (board and backlog), narrowed by the quick filters in the link and an optional `jql` | `watch_boards`: open issues within the board's labels, milestone and assignee (board and backlog) | n/a |
 
 On Jira and Bitbucket a mention counts as answered once you comment after it, on GitLab once its to-do is done. GitLab work items (tasks, epics, objectives and the like, GitLab 17+) count as issues. Answered mentions move from "Mentioned" to the watchlist.
 
@@ -166,7 +166,7 @@ On Jira and Bitbucket a mention counts as answered once you comment after it, on
 | `jira.scope_jql` | `""` | Extra JQL ANDed to every query, e.g. `project in (PLAT, OPS)` |
 | `jira.participation_jql` | `null` | Custom JQL for "involved", e.g. a ScriptRunner `issueFunction in commented("by currentUser()")` |
 | `jira.include_done`, `gitlab.include_closed`, `bitbucket.include_closed` | `false` | Also show finished work |
-| `jira.watch_boards`, `gitlab.watch_boards` | `[]` | Board links copied from the browser, e.g. `https://jira.example/secure/RapidBoard.jspa?rapidView=42` or `https://gitlab.example/group/project/-/boards/7`. Their open issues appear in the Boards column of the Issues tab and at the end of Next up. Easiest from the app: **?** → *Boards you follow*, paste the link, **Follow** |
+| `jira.watch_boards`, `gitlab.watch_boards` | `[]` | Board links copied from the browser, e.g. `https://jira.example/secure/RapidBoard.jspa?rapidView=42` or `https://gitlab.example/group/project/-/boards/7`. Their open issues appear in the Boards column of the Issues tab and at the end of Next up. Easiest from the app: **?** → *Boards you follow*, paste the link, **Follow**. To follow only part of a Jira board, select its quick filters before copying the link, or add JQL in the app or as `{"url": "…", "jql": "component = Payments"}` |
 | `gitlab.watch_projects` | `[]` | Projects or groups whose open MRs appear under Team repos |
 | `bitbucket.watch_repos` | `[]` | `PROJ` or `PROJ/repo` whose open PRs appear under Team repos |
 | `bitbucket.username` | `""` | Only needed if your server does not send `X-AUSERNAME` |

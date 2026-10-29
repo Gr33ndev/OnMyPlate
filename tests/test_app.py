@@ -890,6 +890,24 @@ class FollowBoardTests(DataDirCase):
         self.assertIsNone(self.store.change_boards("remove", jira_board))
         self.assertEqual(self.saved()["jira"]["watch_boards"], [])
 
+    def test_jira_boards_can_be_narrowed_by_jql(self) -> None:
+        board = f"{self.JIRA}/secure/RapidBoard.jspa?rapidView=42"
+        self.assertIsNone(self.store.change_boards("add", board, "  component =\n Payments "))
+        self.assertIsNone(self.store.change_boards("add", board))
+        self.assertIsNone(self.store.change_boards("add", f"{board}&quickFilter=3"))
+        self.assertIn(
+            "already follow", self.store.change_boards("add", board, "component = Payments")
+        )
+        narrowed = {"url": board, "jql": "component = Payments"}
+        self.assertEqual(
+            self.saved()["jira"]["watch_boards"], [narrowed, board, f"{board}&quickFilter=3"]
+        )
+        gitlab = f"{self.GITLAB}/platform/infra/-/boards/7"
+        self.assertIn("Only Jira", self.store.change_boards("add", gitlab, "labels = x"))
+        self.assertIn("not followed", self.store.change_boards("remove", board, "component = X"))
+        self.assertIsNone(self.store.change_boards("remove", board, "component = Payments"))
+        self.assertEqual(self.saved()["jira"]["watch_boards"], [board, f"{board}&quickFilter=3"])
+
     def test_bad_links_and_requests_change_nothing(self) -> None:
         board = f"{self.JIRA}/jira/software/projects/PLAT/boards/42"
         self.assertIsNone(self.store.change_boards("add", board))
@@ -901,10 +919,12 @@ class FollowBoardTests(DataDirCase):
             ("add", 42): "Send a board link",
             ("delete", board): "Send a board link",
             ("remove", f"{self.GITLAB}/x/-/boards/1"): "not followed",
+            ("add", board, 42): "Send a board link",
+            ("add", board, "x" * (wl.MAX_BOARD_JQL + 1)): "Send a board link",
         }
-        for (action, url), message in cases.items():
+        for (action, url, *jql), message in cases.items():
             with self.subTest(action=action, url=url):
-                self.assertIn(message, self.store.change_boards(action, url))
+                self.assertIn(message, self.store.change_boards(action, url, *jql))
         self.assertEqual(self.path.read_text(), before)
 
     def test_board_limit(self) -> None:
@@ -940,7 +960,7 @@ class FollowBoardTests(DataDirCase):
         self.store.change_boards("add", board)
         self.store.refresh()
         sources = {s["name"]: s for s in self.store.snapshot()["setup"]["sources"]}
-        self.assertEqual(sources["gitlab"]["boards"], [board])
+        self.assertEqual(sources["gitlab"]["boards"], [{"url": board, "jql": ""}])
         self.assertEqual(sources["jira"]["boards"], [])
         self.assertIsNone(sources["bitbucket"]["boards"])
 

@@ -639,6 +639,8 @@ Team repos (open PRs/MRs, plus mention search on Bitbucket), optional:
 
 Boards whose open issues (board and backlog) you want to pick work from, optional:
   jira.watch_boards       – board links, e.g. [".../secure/RapidBoard.jspa?rapidView=42"]
+                            only part of a board: select quick filters before copying the link,
+                            or {{"url": "...", "jql": "component = Payments"}}
   gitlab.watch_boards     – board links, e.g. [".../platform/infra-live/-/boards/7"]
 
 On My Plate only reads. Write requests are blocked in the code.
@@ -1293,15 +1295,20 @@ class JiraSource(Source):
         board = board or (match.group(1) if match else "")
         return board if board.isdigit() else None
 
-    def _board_filters(self, warnings: list[str]) -> list[str]:
-        """Each board shows the issues of a saved filter; its backlog is part of it."""
+    def _board_queries(self, warnings: list[str]) -> list[str]:
+        """Each board shows the issues of a saved filter; its backlog is part of it.
+
+        Quick filters selected in the link and an entry's own "jql" narrow the board,
+        as they do on the board itself.
+        """
         agile = re.sub(r"/rest/api/\d+$", "/rest/agile/1.0", self.api or "")
-        filters: list[str] = []
+        queries: list[str] = []
         for entry in self.cfg.get("watch_boards") or []:
-            board = self.board_id(self.base, entry)
+            url, jql = board_entry(entry)
+            board = self.board_id(self.base, url)
             if not board:
                 warnings.append(
-                    f"Jira: ignoring watch_boards entry '{sanitize(entry, 80)}'. "
+                    f"Jira: ignoring watch_boards entry '{sanitize(url, 80)}'. "
                     f"Copy the link of a board on {self.base} from the browser."
                 )
                 continue
@@ -1316,11 +1323,30 @@ class JiraSource(Source):
                 warnings.append(f"Jira: cannot read board {board} ({exc}).{hint}")
                 continue
             filter_id = str((config.get("filter") or {}).get("id") or "")
-            if filter_id.isdigit():
-                filters.append(filter_id)
-            else:
+            if not filter_id.isdigit():
                 warnings.append(f"Jira: board {board} has no filter that could be read.")
-        return filters
+                continue
+            parts = [f"filter = {filter_id}"]
+            for quick in quick_filter_ids(url):
+                try:
+                    found = self._call("GET", f"{agile}/board/{board}/quickfilter/{quick}") or {}
+                except SourceError as exc:
+                    found = {}
+                    warnings.append(
+                        f"Jira: cannot read quick filter {quick} of board {board} ({exc})."
+                    )
+                if isinstance(found.get("jql"), str) and found["jql"].strip():
+                    parts.append(found["jql"])
+                else:
+                    # Showing the whole board instead would flood the list with unwanted issues.
+                    parts = []
+                    break
+            parts += [jql] if parts and jql else []
+            if parts:
+                queries.append(
+                    " AND ".join(f"({part})" for part in parts) if len(parts) > 1 else parts[0]
+                )
+        return queries
 
     def _issue_path(self, key: str) -> str:
         return f"/issue/{urllib.parse.quote(key, safe='')}"
@@ -1356,7 +1382,7 @@ class JiraSource(Source):
         ]
         if participation:
             queries.append(("participant", participation))
-        queries += [("board", f"filter = {fid}") for fid in self._board_filters(warnings)]
+        queries += [("board", jql) for jql in self._board_queries(warnings)]
 
         def run(query: tuple[str, str]) -> tuple[str, list[dict[str, Any]], str | None]:
             relation, jql = query
@@ -1777,12 +1803,17 @@ class GitLabSource(Source):
         """
         boards = []
         for entry in self.cfg.get("watch_boards") or []:
-            parsed = self.parse_board(self.base, entry)
+            url, jql = board_entry(entry)
+            parsed = self.parse_board(self.base, url)
+            if parsed and jql:
+                warnings.append(
+                    f'GitLab: "jql" works only for Jira boards; showing all of {sanitize(url, 80)}.'
+                )
             if parsed:
                 boards.append(parsed)
             else:
                 warnings.append(
-                    f"GitLab: ignoring watch_boards entry '{sanitize(entry, 80)}'. "
+                    f"GitLab: ignoring watch_boards entry '{sanitize(url, 80)}'. "
                     f"Copy the link of a board on {self.base} from the browser."
                 )
 
@@ -1830,11 +1861,9 @@ class GitLabSource(Source):
         after = (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%d")
         refs: list[tuple[int, str, int]] = []
         try:
-            events = self.paged(
-                "/events",
-                {"action": "commented", "target_type": "note", "after": after},
-                limit=2000,
-            )
+            # No target_type=note filter: it matches only plain notes, while comments in
+            # threads and on diffs are stored as DiscussionNote and DiffNote.
+            events = self.paged("/events", {"action": "commented", "after": after}, limit=2000)
         except SourceError as exc:
             warnings.append(f"GitLab: cannot read comments: {exc}")
             events = []
@@ -2273,6 +2302,27 @@ BOARD_PARSERS: dict[str, Callable[[str, object], object]] = {
     "gitlab": GitLabSource.parse_board,
 }
 MAX_WATCH_BOARDS = 20
+MAX_BOARD_JQL = 1000
+
+
+def board_entry(entry: object) -> tuple[object, str]:
+    """Split a watch_boards entry into its link and the JQL that narrows it (Jira only).
+
+    An entry is a board link, or {"url": link, "jql": "component = Payments"}.
+    """
+    if isinstance(entry, dict):
+        jql = entry.get("jql")
+        # One line, so that the entry shown in the app matches the one in the file.
+        return entry.get("url"), " ".join(jql.split()) if isinstance(jql, str) else ""
+    return entry, ""
+
+
+def quick_filter_ids(url: object) -> list[str]:
+    """Quick filters selected on a Jira board end up in its link as quickFilter=12."""
+    if not isinstance(url, str):
+        return []
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(url.strip()).query)
+    return sorted({q for q in query.get("quickFilter", []) if q.isdigit()})
 
 
 # --------------------------------------------------------------------------- #
@@ -2714,13 +2764,19 @@ class Store:
                     del self.by_source[name]
         return None
 
-    def change_boards(self, action: object, url: object) -> str | None:
+    def change_boards(self, action: object, url: object, jql: object = "") -> str | None:
         """Follow or unfollow a board in the config file; return a message for the user on failure."""
         if self.demo or self.config_path is None:
             return "Boards can only be followed with a config file, not in demo mode."
-        if action not in ("add", "remove") or not isinstance(url, str) or len(url) > 2000:
+        if (
+            action not in ("add", "remove")
+            or not isinstance(url, str)
+            or len(url) > 2000
+            or not isinstance(jql, str)
+            or len(jql) > MAX_BOARD_JQL
+        ):
             return "Send a board link and whether to add or remove it."
-        url = url.strip()
+        url, jql = url.strip(), " ".join(jql.split())
         with self.config_lock:
             reason = untrusted_reason(self.config_path)
             if reason:
@@ -2736,19 +2792,20 @@ class Store:
                 move_tokens_to_keychain(self.config_path, user)
             except SourceError as exc:
                 return str(exc)
-            error = self._edit_boards(user, action, url)
+            error = self._edit_boards(user, action, url, jql)
             if error:
                 return error
             write_private(self.config_path, json.dumps(user, indent=2, ensure_ascii=False))
         return None
 
-    def _edit_boards(self, user: dict[str, Any], action: str, url: str) -> str | None:
+    def _edit_boards(self, user: dict[str, Any], action: str, url: str, jql: str) -> str | None:
         for name in BOARD_PARSERS:
             section = user.get(name)
             boards = section.get("watch_boards") if isinstance(section, dict) else None
-            if action == "remove" and isinstance(boards, list) and url in boards:
-                boards.remove(url)
-                return None
+            for entry in boards if action == "remove" and isinstance(boards, list) else []:
+                if board_entry(entry) == (url, jql):
+                    boards.remove(entry)
+                    return None
         if action == "remove":
             return "This board is not followed."
         for name, parse in BOARD_PARSERS.items():
@@ -2756,6 +2813,8 @@ class Store:
             board = parse(base, url) if base else None
             if not board:
                 continue
+            if jql and name != "jira":
+                return "Only Jira boards can be narrowed with JQL. Leave the JQL field empty."
             section = user.setdefault(name, {})
             if not isinstance(section, dict):
                 return f'"{name}" in the config is not an object. Fix it in an editor first.'
@@ -2764,11 +2823,14 @@ class Store:
                 return (
                     f'"{name}.watch_boards" in the config is not a list. Fix it in an editor first.'
                 )
-            if any(parse(base, entry) == board for entry in boards):
-                return "You already follow this board."
+            identity = (board, quick_filter_ids(url), jql)
+            for entry in boards:
+                link, narrowed = board_entry(entry)
+                if (parse(base, link), quick_filter_ids(link), narrowed) == identity:
+                    return "You already follow this board with the same filter."
             if len(boards) >= MAX_WATCH_BOARDS:
                 return f"You can follow up to {MAX_WATCH_BOARDS} boards per source."
-            boards.append(url)
+            boards.append({"url": url, "jql": jql} if jql else url)
             return None
         return (
             "This is not a board link of your Jira or GitLab. Open the board in the browser "
@@ -2875,9 +2937,9 @@ class Store:
                     "ok_at": (self.by_source.get(name) or {}).get("ok_at"),
                     "error": sanitize(self.source_errors.get(name, ""), 500),
                     "boards": [
-                        sanitize(entry, 300)
-                        for entry in section.get("watch_boards") or []
-                        if isinstance(entry, str)
+                        {"url": sanitize(url, 300), "jql": sanitize(jql, MAX_BOARD_JQL)}
+                        for url, jql in map(board_entry, section.get("watch_boards") or [])
+                        if isinstance(url, str)
                     ]
                     if name in BOARD_PARSERS
                     else None,
@@ -3158,7 +3220,9 @@ class RequestHandler(BaseHTTPRequestHandler):
         if data is None:
             return
         if path == "/api/boards":
-            error = self.server.store.change_boards(data.get("action"), data.get("url"))
+            error = self.server.store.change_boards(
+                data.get("action"), data.get("url"), data.get("jql", "")
+            )
             if error:
                 self._send(400, {"error": error})
                 return
@@ -3942,12 +4006,13 @@ aside h2 span { color: var(--muted); font-weight: 500; }
 .setup th { font-size: 11px; color: var(--muted); font-weight: 600; border-top: 0; }
 .setup .ok { color: var(--ok); font-weight: 600; } .setup .bad { color: var(--danger); font-weight: 600; } .setup .off { color: var(--muted); }
 .setup p { margin: 8px 0; color: var(--muted); }
-.bform { display: flex; gap: 6px; margin: 8px 0; }
-.bform input { flex: 1; min-width: 0; padding: 6px 9px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--panel); color: var(--text); outline: none; }
+.bform { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.bform input { flex: 1 1 220px; min-width: 0; padding: 6px 9px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--panel); color: var(--text); outline: none; }
 .bform input:focus { border-color: var(--accent); }
 .blist { list-style: none; margin: 0; padding: 0; }
 .blist li { display: flex; gap: 8px; align-items: baseline; padding: 4px 0; border-top: 1px solid var(--border); }
-.blist li code { flex: 1; }
+.blist li > span:nth-child(2) { flex: 1; }
+.blist li small { display: block; color: var(--muted); }
 .setup .bmsg:empty { display: none; }
 .setup #boardsTitle { margin-top: 18px; }
 .setup code, .about code { font-family: var(--mono); font-size: 12px; word-break: break-all; color: var(--text); }
@@ -4955,13 +5020,18 @@ function renderSetup() {
       ${x.error ? `<tr><td></td><td colspan="3" class="bad" style="font-weight:400">${esc(x.error)}</td></tr>` : ""}`;
   }).join("");
   const withBoards = (st.sources || []).filter(x => x.enabled && Array.isArray(x.boards));
-  const followed = withBoards.flatMap(x => x.boards.map(url => `<li><span class="off">${esc(x.label)}</span><code>${esc(url)}</code>
-      <button class="btn sm" data-act="unfollow-board" data-url="${esc(url)}" aria-label="Unfollow ${esc(url)}">Unfollow</button></li>`)).join("");
+  const followed = withBoards.flatMap(x => x.boards.map(b => `<li><span class="off">${esc(x.label)}</span>
+      <span><code>${esc(b.url)}</code>${b.jql ? `<small>Only: <code>${esc(b.jql)}</code></small>` : ""}</span>
+      <button class="btn sm" data-act="unfollow-board" data-url="${esc(b.url)}" data-jql="${esc(b.jql)}" aria-label="Unfollow ${esc(b.url)}">Unfollow</button></li>`)).join("");
+  // Only Jira boards can be narrowed by JQL; GitLab boards are narrowed on the board itself.
+  const jira = withBoards.some(x => x.name === "jira");
   const boards = st.config && withBoards.length ? `<h4 id="boardsTitle">Boards you follow</h4>
-    <p>Open issues of these boards and their backlogs appear in the Boards column of the Issues tab and at the end of Next up.</p>
+    <p>Open issues of these boards and their backlogs appear in the Boards column of the Issues tab and at the end of Next up.
+      ${jira ? "Only part of a Jira board? Select its quick filters before you copy the link, or add JQL such as <code>component = Payments</code>." : ""}</p>
     ${followed ? `<ul class="blist">${followed}</ul>` : ""}
     <form class="bform" id="boardForm"><input type="url" name="url" required maxlength="2000" autocomplete="off"
-      placeholder="Paste a board link from ${esc(withBoards.map(x => x.label).join(" or "))}" aria-label="Board link"><button class="btn sm">Follow</button></form>
+      placeholder="Paste a board link from ${esc(withBoards.map(x => x.label).join(" or "))}" aria-label="Board link">
+      ${jira ? `<input name="jql" maxlength="1000" autocomplete="off" spellcheck="false" placeholder="Optional for Jira: only issues matching JQL" aria-label="Only issues matching JQL (Jira, optional)">` : ""}<button class="btn sm">Follow</button></form>
     <p class="bmsg" id="boardMsg" role="status"></p>` : "";
   $("#setup").innerHTML = `<h4 id="setupTitle">Sources</h4>${data.demo ? "<p>Demo mode: sample data, no sources are contacted.</p>" : ""}
     ${rows ? `<table><thead><tr><th>Source</th><th>Status</th><th>URL</th><th>Token</th></tr></thead><tbody>${rows}</tbody></table>` : ""}${boards}
@@ -4992,13 +5062,13 @@ $("#todoForm").addEventListener("submit", e => {
   $("#todoInput").value = ""; $("#todoDue").value = ""; saveTodos(); render();
 });
 // Following a board writes the config file; the server checks the link and answers with fresh data.
-async function changeBoard(action, url) {
+async function changeBoard(action, url, jql = "") {
   const msg = $("#boardMsg");
   if (msg) msg.textContent = action === "add" ? "Loading the board …" : "Saving …";
   let error = "";
   try {
     const r = await fetch("/api/boards", { method: "POST", headers: { "Content-Type": "application/json", "X-OnMyPlate-Token": token },
-                                           body: JSON.stringify({ action, url }) });
+                                           body: JSON.stringify({ action, url, jql }) });
     const j = await r.json().catch(() => ({}));
     if (r.ok) { data = Object.assign({ items: [], errors: [], warnings: [] }, j); baseline(); render(); }
     else error = j.error || "The board could not be saved.";
@@ -5006,11 +5076,17 @@ async function changeBoard(action, url) {
   renderSetup();
   $("#boardMsg").textContent = error || (action === "add" ? "Following the board." : "Board removed.");
   // Keep a rejected link in the field so it can be corrected.
-  if (error && action === "add") $("#boardForm input").value = url;
+  const form = $("#boardForm");
+  if (error && action === "add") { form.elements.url.value = url; if (form.elements.jql) form.elements.jql.value = jql; }
   if (action === "add") $("#boardForm input").focus();
 }
 document.addEventListener("submit", e => {
-  if (e.target.id === "boardForm") { e.preventDefault(); changeBoard("add", e.target.elements.url.value.trim()); return; }
+  if (e.target.id === "boardForm") {
+    e.preventDefault();
+    const f = e.target.elements;
+    changeBoard("add", f.url.value.trim(), f.jql?.value.trim() || "");
+    return;
+  }
   const f = e.target.closest(".tedit"); if (!f) return;
   e.preventDefault();
   const t = todos.find(x => x.id === f.dataset.tid), text = f.elements.text.value.trim();
@@ -5044,7 +5120,7 @@ document.addEventListener("click", e => {
   if (act === "licenses") { toggleLicenses(el); return; }
   if (act === "show-setup") { toggleHelp(true, "#setup"); return; }
   if (act === "show-boards") { toggleHelp(true, "#boardsTitle"); $("#boardForm input")?.focus(); return; }
-  if (act === "unfollow-board") { changeBoard("remove", el.dataset.url); return; }
+  if (act === "unfollow-board") { changeBoard("remove", el.dataset.url, el.dataset.jql); return; }
   const it = id && data.items.find(i => i.id === id);
   switch (act) {
     case "pin": local.pins = local.pins.includes(id) ? local.pins.filter(x => x !== id) : [...local.pins, id]; saveLocal(); render(); break;
