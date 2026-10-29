@@ -4,6 +4,8 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.5.0] – 2026-10-29
+
 ### Added
 - Follow only part of a Jira board: select the board's quick filters before you copy the link, or add JQL such as `component = Payments` when you follow it (in the app, or as `{"url": "…", "jql": "…"}` in `jira.watch_boards`).
 
@@ -105,7 +107,8 @@ First public release.
   - Server fields checked and cleaned before they reach the UI.
   - A config that another user could change is refused, so nobody can redirect tokens.
 
-[Unreleased]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/Gr33ndev/OnMyPlate/compare/v0.2.0...v0.2.1
